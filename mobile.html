@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>OutlineWriter Mobile</title>
+    <link rel="stylesheet" href="mobile-styles.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2196F3">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="OutlineWriter">
+</head>
+<body>
+    <!-- ヘッダー -->
+    <header class="mobile-header">
+        <div class="header-left">
+            <button id="sidebar-toggle" class="icon-btn" aria-label="メニュー">
+                <span class="hamburger"></span>
+            </button>
+            <h1>OutlineWriter</h1>
+        </div>
+        <div class="header-right">
+            <button id="search-btn" class="icon-btn" aria-label="検索">🔍</button>
+            <button id="menu-btn" class="icon-btn" aria-label="その他">⋮</button>
+        </div>
+    </header>
+
+    <!-- メイン画面 -->
+    <main class="mobile-main">
+        <!-- サイドバー -->
+        <aside id="mobile-sidebar" class="mobile-sidebar">
+            <div class="sidebar-header">
+                <h2>アウトライン</h2>
+                <div class="sidebar-controls">
+                    <button id="expand-all-mobile" class="control-btn">全て展開</button>
+                    <button id="collapse-all-mobile" class="control-btn">全て折り畳み</button>
+                </div>
+            </div>
+            <div id="outline-tree-mobile" class="outline-tree-mobile">
+                <!-- アウトライン項目がここに表示される -->
+            </div>
+        </aside>
+
+        <!-- エディター -->
+        <section id="mobile-editor" class="mobile-editor">
+            <div class="editor-header-mobile">
+                <div class="breadcrumb" id="breadcrumb">
+                    <span class="breadcrumb-item">ホーム</span>
+                </div>
+                <div class="item-controls-mobile">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="is-heading-mobile"> 見出し
+                    </label>
+                </div>
+            </div>
+            
+            <div class="title-section">
+                <input type="text" id="current-title-mobile" placeholder="タイトルを入力..." class="title-input-mobile">
+            </div>
+            
+            <div class="content-section">
+                <textarea id="current-content-mobile" placeholder="内容を入力してください..."></textarea>
+            </div>
+            
+            <div class="char-count-mobile">
+                現在: <span id="char-count-mobile">0</span> | 全体: <span id="total-char-count-mobile">0</span>
+            </div>
+        </section>
+    </main>
+
+    <!-- ボトムツールバー -->
+    <div class="bottom-toolbar">
+        <button id="add-item-mobile" class="toolbar-btn primary">
+            <span class="btn-icon">➕</span>
+            <span class="btn-text">項目追加</span>
+        </button>
+        <button id="indent-mobile" class="toolbar-btn">
+            <span class="btn-icon">➡️</span>
+            <span class="btn-text">インデント</span>
+        </button>
+        <button id="outdent-mobile" class="toolbar-btn">
+            <span class="btn-icon">⬅️</span>
+            <span class="btn-text">アウトデント</span>
+        </button>
+        <button id="delete-mobile" class="toolbar-btn danger">
+            <span class="btn-icon">🗑️</span>
+            <span class="btn-text">削除</span>
+        </button>
+    </div>
+
+    <!-- アクションメニュー -->
+    <div id="action-menu" class="action-menu hidden">
+        <div class="menu-backdrop"></div>
+        <div class="menu-panel">
+            <div class="menu-header">
+                <h3>メニュー</h3>
+                <button id="close-menu" class="close-btn">✕</button>
+            </div>
+            <div class="menu-content">
+                <div class="menu-section">
+                    <h4>操作</h4>
+                    <button id="undo-mobile" class="menu-item">
+                        <span class="menu-icon">↶</span>
+                        元に戻す
+                    </button>
+                    <button id="redo-mobile" class="menu-item">
+                        <span class="menu-icon">↷</span>
+                        やり直し
+                    </button>
+                </div>
+                
+                <div class="menu-section">
+                    <h4>バックアップ</h4>
+                    <button id="backup-mobile" class="menu-item">
+                        <span class="menu-icon">💾</span>
+                        バックアップ作成
+                    </button>
+                    <button id="restore-mobile" class="menu-item">
+                        <span class="menu-icon">📂</span>
+                        バックアップ復元
+                    </button>
+                </div>
+                
+                <div class="menu-section">
+                    <h4>ファイル</h4>
+                    <button id="save-mobile" class="menu-item">
+                        <span class="menu-icon">💾</span>
+                        保存
+                    </button>
+                    <input type="file" id="load-file-mobile" accept=".json" style="display: none;">
+                    <button id="load-mobile" class="menu-item">
+                        <span class="menu-icon">📁</span>
+                        JSON読込
+                    </button>
+                    <input type="file" id="load-markdown-mobile" accept=".md,.markdown" style="display: none;">
+                    <button id="load-md-mobile" class="menu-item">
+                        <span class="menu-icon">📄</span>
+                        Markdown読込
+                    </button>
+                </div>
+                
+                <div class="menu-section">
+                    <h4>エクスポート</h4>
+                    <button id="export-md-mobile" class="menu-item">
+                        <span class="menu-icon">📤</span>
+                        Markdown出力
+                    </button>
+                    <button id="export-text-mobile" class="menu-item">
+                        <span class="menu-icon">📝</span>
+                        テキスト出力
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- トースト通知 -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-message"></span>
+    </div>
+
+    <!-- 検索パネル -->
+    <div id="search-panel" class="search-panel hidden">
+        <div class="search-header">
+            <input type="text" id="search-input" placeholder="検索...">
+            <button id="close-search" class="close-btn">✕</button>
+        </div>
+        <div id="search-results" class="search-results">
+            <!-- 検索結果がここに表示される -->
+        </div>
+    </div>
+
+    <script src="mobile-script.js"></script>
+</body>
+</html>
