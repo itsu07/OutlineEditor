@@ -14,8 +14,18 @@ class MobileOutlineWriter {
         this.sidebarOpen = false;
         this.selectedItems = new Set();
         
+        // Google Drive integration
+        this.driveConfig = {
+            apiUrl: '', // GASのAPIエンドポイントURL
+            fileId: '', // Google DriveのファイルID
+            connected: false,
+            syncEnabled: false,
+            lastSync: null
+        };
+        
         this.initializeElements();
         this.bindEvents();
+        this.loadConfig();
         this.loadData();
         this.updateHierarchyPaths();
         this.renderOutline();
@@ -59,6 +69,13 @@ class MobileOutlineWriter {
             redoBtn: document.getElementById('redo-mobile'),
             backupBtn: document.getElementById('backup-mobile'),
             restoreBtn: document.getElementById('restore-mobile'),
+            
+            // Drive integration
+            driveSetupBtn: document.getElementById('drive-setup-mobile'),
+            driveSyncBtn: document.getElementById('drive-sync-mobile'),
+            driveStatus: document.querySelector('.drive-status'),
+            
+            // Local files
             saveBtn: document.getElementById('save-mobile'),
             loadBtn: document.getElementById('load-mobile'),
             loadFileInput: document.getElementById('load-file-mobile'),
@@ -66,6 +83,26 @@ class MobileOutlineWriter {
             loadMarkdownInput: document.getElementById('load-markdown-mobile'),
             exportMdBtn: document.getElementById('export-md-mobile'),
             exportTextBtn: document.getElementById('export-text-mobile'),
+            
+            // Drive setup dialog
+            driveSetupDialog: document.getElementById('drive-setup-dialog'),
+            closeDriveDialog: document.getElementById('close-drive-dialog'),
+            gasApiUrl: document.getElementById('gas-api-url'),
+            driveFileId: document.getElementById('drive-file-id'),
+            autoSync: document.getElementById('auto-sync'),
+            connectionStatus: document.getElementById('connection-status'),
+            testConnection: document.getElementById('test-connection'),
+            saveDriveConfig: document.getElementById('save-drive-config'),
+            
+            // Sync dialog
+            syncDialog: document.getElementById('sync-dialog'),
+            closeSyncDialog: document.getElementById('close-sync-dialog'),
+            localTimestamp: document.getElementById('local-timestamp'),
+            driveTimestamp: document.getElementById('drive-timestamp'),
+            lastSyncTimestamp: document.getElementById('last-sync-timestamp'),
+            uploadToDrive: document.getElementById('upload-to-drive'),
+            downloadFromDrive: document.getElementById('download-from-drive'),
+            syncProgress: document.getElementById('sync-progress'),
             
             // Search
             searchPanel: document.getElementById('search-panel'),
@@ -123,6 +160,20 @@ class MobileOutlineWriter {
         this.elements.loadMarkdownInput.addEventListener('change', (e) => this.loadFromMarkdownFile(e));
         this.elements.exportMdBtn.addEventListener('click', () => this.exportAsMarkdown());
         this.elements.exportTextBtn.addEventListener('click', () => this.exportAsText());
+        
+        // Drive events
+        this.elements.driveSetupBtn.addEventListener('click', () => this.openDriveSetupDialog());
+        this.elements.driveSyncBtn.addEventListener('click', () => this.openSyncDialog());
+        this.elements.closeDriveDialog.addEventListener('click', () => this.closeDriveSetupDialog());
+        this.elements.closeSyncDialog.addEventListener('click', () => this.closeSyncDialog());
+        this.elements.testConnection.addEventListener('click', () => this.testDriveConnection());
+        this.elements.saveDriveConfig.addEventListener('click', () => this.saveDriveConfig());
+        this.elements.uploadToDrive.addEventListener('click', () => this.uploadToDrive());
+        this.elements.downloadFromDrive.addEventListener('click', () => this.downloadFromDrive());
+        
+        // Drive dialog backdrop events
+        this.elements.driveSetupDialog.querySelector('.dialog-backdrop').addEventListener('click', () => this.closeDriveSetupDialog());
+        this.elements.syncDialog.querySelector('.dialog-backdrop').addEventListener('click', () => this.closeSyncDialog());
         
         // Search events
         this.elements.closeSearch.addEventListener('click', () => this.closeSearch());
@@ -856,6 +907,7 @@ class MobileOutlineWriter {
     saveData() {
         try {
             localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
+            localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
             this.showToast('データを保存しました');
         } catch (e) {
             this.showToast('保存に失敗しました');
@@ -1000,17 +1052,229 @@ class MobileOutlineWriter {
         }
     }
 
-    // Include other parsing methods...
     parseMarkdownWithHierarchy(markdownContent, data) {
-        // Implementation from main script
-        // ... (keeping it brief for space)
+        const lines = markdownContent.split('\n');
+        const hierarchyMap = new Map();
+        let currentItem = null;
+        let currentContent = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmedLine = line.trim();
+
+            const hierarchyMatch = trimmedLine.match(/^<!--\s*hierarchy:\s*([\d.]+)\s+level:\s*(\d+)\s*-->$/);
+
+            if (hierarchyMatch) {
+                if (currentItem && currentContent.length > 0) {
+                    currentItem.content = currentContent.join('\n').trim();
+                }
+                currentContent = [];
+
+                const hierarchyPath = hierarchyMatch[1];
+                const level = parseInt(hierarchyMatch[2]);
+                
+                if (i + 1 < lines.length) {
+                    const nextLine = lines[i + 1].trim();
+                    const nextHeadingMatch = nextLine.match(/^(#{1,6})\s+(.+)$/);
+                    const nextListMatch = nextLine.match(/^(\s*)-\s+(.+)$/);
+                    
+                    if (nextHeadingMatch || nextListMatch) {
+                        const title = nextHeadingMatch ? nextHeadingMatch[2] : nextListMatch[2];
+                        const isHeading = !!nextHeadingMatch;
+                        
+                        const item = {
+                            id: data.nextId++,
+                            title: title,
+                            content: '',
+                            isHeading: isHeading,
+                            children: [],
+                            expanded: true,
+                            parentId: null,
+                            hierarchyPath: hierarchyPath,
+                            level: level
+                        };
+
+                        hierarchyMap.set(hierarchyPath, item);
+                        currentItem = item;
+                        i++; // 次の行をスキップ
+                    }
+                }
+            } else if (trimmedLine === '') {
+                if (currentContent.length > 0) {
+                    currentContent.push('');
+                }
+            } else if (trimmedLine && !trimmedLine.startsWith('<!--') && !trimmedLine.startsWith('#') && !trimmedLine.startsWith('-')) {
+                currentContent.push(line.replace(/^\s+/, ''));
+            }
+        }
+
+        if (currentItem && currentContent.length > 0) {
+            currentItem.content = currentContent.join('\n').trim();
+        }
+
+        this.reconstructHierarchy(data, hierarchyMap);
         return data;
     }
 
     parseMarkdownTraditional(markdownContent, data) {
-        // Implementation from main script
-        // ... (keeping it brief for space)
+        const lines = markdownContent.split('\n');
+        const stack = [];
+        let currentContent = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmedLine = line.trim();
+
+            const headingMatch = trimmedLine.match(/^(#{1,6})\s+(.+)$/);
+            const listMatch = trimmedLine.match(/^(\s*)-\s+(.+)$/);
+
+            if (headingMatch) {
+                this.addContentToCurrentItem(stack, currentContent);
+                currentContent = [];
+
+                const level = headingMatch[1].length;
+                const title = headingMatch[2];
+                
+                const item = {
+                    id: data.nextId++,
+                    title: title,
+                    content: '',
+                    isHeading: true,
+                    children: [],
+                    expanded: true,
+                    parentId: null,
+                    hierarchyPath: '',
+                    level: level - 1
+                };
+
+                while (stack.length >= level) {
+                    stack.pop();
+                }
+
+                if (stack.length > 0) {
+                    item.parentId = stack[stack.length - 1].id;
+                    stack[stack.length - 1].children.push(item);
+                } else {
+                    data.items.push(item);
+                }
+
+                stack.push(item);
+            } else if (listMatch) {
+                this.addContentToCurrentItem(stack, currentContent);
+                currentContent = [];
+
+                const indentSpaces = listMatch[1].length;
+                const title = listMatch[2];
+                const item = {
+                    id: data.nextId++,
+                    title: title,
+                    content: '',
+                    isHeading: false,
+                    children: [],
+                    expanded: true,
+                    parentId: null,
+                    hierarchyPath: '',
+                    level: 0
+                };
+
+                // リスト項目の階層判定を改善
+                while (stack.length > 1 && !stack[stack.length - 1].isHeading) {
+                    const lastItem = stack[stack.length - 1];
+                    const lastIndent = lastItem._tempIndent || 0;
+                    if (lastIndent >= indentSpaces) {
+                        stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+
+                if (stack.length > 0) {
+                    item.parentId = stack[stack.length - 1].id;
+                    stack[stack.length - 1].children.push(item);
+                } else {
+                    data.items.push(item);
+                }
+
+                item._tempIndent = indentSpaces;
+                stack.push(item);
+            } else if (trimmedLine === '') {
+                if (currentContent.length > 0) {
+                    currentContent.push('');
+                }
+            } else if (trimmedLine) {
+                currentContent.push(line.replace(/^\s+/, ''));
+            }
+        }
+
+        this.addContentToCurrentItem(stack, currentContent);
+        
+        // 一時的なインデント情報を削除
+        this.cleanupTempData(data.items);
+
         return data;
+    }
+
+    cleanupTempData(items) {
+        items.forEach(item => {
+            delete item._tempIndent;
+            if (item.children) {
+                this.cleanupTempData(item.children);
+            }
+        });
+    }
+
+    reconstructHierarchy(data, hierarchyMap) {
+        // 階層パスでソート
+        const sortedPaths = Array.from(hierarchyMap.keys()).sort((a, b) => {
+            const pathA = a.split('.').map(n => parseInt(n));
+            const pathB = b.split('.').map(n => parseInt(n));
+            
+            for (let i = 0; i < Math.max(pathA.length, pathB.length); i++) {
+                const numA = pathA[i] || 0;
+                const numB = pathB[i] || 0;
+                if (numA !== numB) {
+                    return numA - numB;
+                }
+            }
+            return 0;
+        });
+
+        // 親子関係を再構築
+        sortedPaths.forEach(path => {
+            const item = hierarchyMap.get(path);
+            const pathParts = path.split('.');
+            
+            if (pathParts.length === 1) {
+                // トップレベル項目
+                data.items.push(item);
+            } else {
+                // 子項目 - 親のパスを計算
+                const parentPath = pathParts.slice(0, -1).join('.');
+                const parent = hierarchyMap.get(parentPath);
+                
+                if (parent) {
+                    item.parentId = parent.id;
+                    parent.children.push(item);
+                } else {
+                    // 親が見つからない場合はトップレベルに追加
+                    data.items.push(item);
+                }
+            }
+        });
+    }
+
+    addContentToCurrentItem(stack, currentContent) {
+        if (currentContent.length > 0 && stack.length > 0) {
+            const currentItem = stack[stack.length - 1];
+            const contentText = currentContent.join('\n').trim();
+            if (contentText) {
+                if (currentItem.content) {
+                    currentItem.content += '\n\n' + contentText;
+                } else {
+                    currentItem.content = contentText;
+                }
+            }
+        }
     }
 
     generateMarkdownExport(items, level) {
@@ -1181,6 +1445,301 @@ class MobileOutlineWriter {
         } catch (e) {
             console.error('自動バックアップに失敗しました:', e);
         }
+    }
+
+    // Google Drive integration
+    loadConfig() {
+        try {
+            const saved = localStorage.getItem('outlinewriter-drive-config');
+            if (saved) {
+                this.driveConfig = { ...this.driveConfig, ...JSON.parse(saved) };
+                this.updateDriveStatus();
+            }
+        } catch (e) {
+            console.error('Drive設定の読み込みに失敗しました:', e);
+        }
+    }
+
+    saveConfig() {
+        try {
+            localStorage.setItem('outlinewriter-drive-config', JSON.stringify(this.driveConfig));
+        } catch (e) {
+            console.error('Drive設定の保存に失敗しました:', e);
+        }
+    }
+
+    updateDriveStatus() {
+        const statusElement = this.elements.driveStatus;
+        const syncButton = this.elements.driveSyncBtn;
+        
+        if (this.driveConfig.connected) {
+            statusElement.classList.add('connected');
+            syncButton.disabled = false;
+        } else {
+            statusElement.classList.remove('connected');
+            syncButton.disabled = true;
+        }
+    }
+
+    openDriveSetupDialog() {
+        this.elements.gasApiUrl.value = this.driveConfig.apiUrl || '';
+        this.elements.driveFileId.value = this.driveConfig.fileId || '';
+        this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
+        
+        this.updateConnectionStatus();
+        this.elements.driveSetupDialog.classList.remove('hidden');
+        this.closeMenu();
+    }
+
+    closeDriveSetupDialog() {
+        this.elements.driveSetupDialog.classList.add('hidden');
+    }
+
+    openSyncDialog() {
+        this.updateSyncInfo();
+        this.elements.syncDialog.classList.remove('hidden');
+        this.closeMenu();
+    }
+
+    closeSyncDialog() {
+        this.elements.syncDialog.classList.add('hidden');
+    }
+
+    updateConnectionStatus() {
+        const statusElement = this.elements.connectionStatus;
+        const indicator = statusElement.querySelector('.status-indicator');
+        const text = statusElement.querySelector('.status-text');
+        
+        if (this.driveConfig.connected) {
+            indicator.classList.remove('offline');
+            indicator.classList.add('online');
+            text.textContent = '接続済み';
+        } else {
+            indicator.classList.remove('online');
+            indicator.classList.add('offline');
+            text.textContent = '未接続';
+        }
+    }
+
+    async testDriveConnection() {
+        const apiUrl = this.elements.gasApiUrl.value.trim();
+        const fileId = this.elements.driveFileId.value.trim();
+        
+        if (!apiUrl || !fileId) {
+            this.showToast('APIのURLとファイルIDを入力してください');
+            return;
+        }
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'test',
+                    fileId: fileId
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.driveConfig.connected = true;
+                    this.updateConnectionStatus();
+                    this.showToast('接続テストに成功しました');
+                } else {
+                    throw new Error(result.error || '接続テストに失敗しました');
+                }
+            } else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        } catch (error) {
+            this.driveConfig.connected = false;
+            this.updateConnectionStatus();
+            this.showToast(`接続テストに失敗しました: ${error.message}`);
+        }
+    }
+
+    saveDriveConfig() {
+        const apiUrl = this.elements.gasApiUrl.value.trim();
+        const fileId = this.elements.driveFileId.value.trim();
+        const autoSync = this.elements.autoSync.checked;
+
+        if (!apiUrl || !fileId) {
+            this.showToast('APIのURLとファイルIDを入力してください');
+            return;
+        }
+
+        this.driveConfig.apiUrl = apiUrl;
+        this.driveConfig.fileId = fileId;
+        this.driveConfig.syncEnabled = autoSync;
+
+        this.saveConfig();
+        this.updateDriveStatus();
+        this.closeDriveSetupDialog();
+        this.showToast('Drive設定を保存しました');
+    }
+
+    updateSyncInfo() {
+        const localTimestamp = localStorage.getItem('outlinewriter-data-timestamp') || 'なし';
+        const lastSync = this.driveConfig.lastSync || 'なし';
+        
+        this.elements.localTimestamp.textContent = localTimestamp;
+        this.elements.lastSyncTimestamp.textContent = lastSync;
+        
+        // Drive timestamp will be updated when we fetch from Drive
+        this.elements.driveTimestamp.textContent = '取得中...';
+        this.fetchDriveTimestamp();
+    }
+
+    async fetchDriveTimestamp() {
+        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
+            this.elements.driveTimestamp.textContent = '未設定';
+            return;
+        }
+
+        try {
+            const response = await fetch(this.driveConfig.apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'getTimestamp',
+                    fileId: this.driveConfig.fileId
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.elements.driveTimestamp.textContent = result.timestamp || 'なし';
+                } else {
+                    this.elements.driveTimestamp.textContent = 'エラー';
+                }
+            } else {
+                this.elements.driveTimestamp.textContent = 'エラー';
+            }
+        } catch (error) {
+            this.elements.driveTimestamp.textContent = 'エラー';
+        }
+    }
+
+    async uploadToDrive() {
+        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
+            this.showToast('Driveが設定されていません');
+            return;
+        }
+
+        this.showSyncProgress();
+
+        try {
+            const dataToUpload = {
+                data: this.data,
+                timestamp: new Date().toLocaleString('ja-JP')
+            };
+
+            const response = await fetch(this.driveConfig.apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'upload',
+                    fileId: this.driveConfig.fileId,
+                    data: JSON.stringify(dataToUpload)
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+                    this.saveConfig();
+                    this.hideSyncProgress();
+                    this.updateSyncInfo();
+                    this.showToast('Driveにアップロードしました');
+                } else {
+                    throw new Error(result.error || 'アップロードに失敗しました');
+                }
+            } else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        } catch (error) {
+            this.hideSyncProgress();
+            this.showToast(`アップロードに失敗しました: ${error.message}`);
+        }
+    }
+
+    async downloadFromDrive() {
+        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
+            this.showToast('Driveが設定されていません');
+            return;
+        }
+
+        this.showSyncProgress();
+
+        try {
+            const response = await fetch(this.driveConfig.apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'download',
+                    fileId: this.driveConfig.fileId
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    const driveData = JSON.parse(result.data);
+                    
+                    if (driveData.data) {
+                        this.data = driveData.data;
+                        this.currentItem = null;
+                        this.elements.currentTitle.value = '';
+                        this.elements.currentContent.value = '';
+                        this.elements.isHeading.checked = false;
+                        this.updateHierarchyPaths();
+                        this.renderOutline();
+                        this.updateCharCount();
+                        this.updateButtonStates();
+                        this.updateBreadcrumb();
+                        this.saveToHistory();
+                        
+                        this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+                        this.saveConfig();
+                        
+                        // Save local timestamp
+                        localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
+                        
+                        this.hideSyncProgress();
+                        this.updateSyncInfo();
+                        this.showToast('Driveからダウンロードしました');
+                    } else {
+                        throw new Error('無効なデータ形式です');
+                    }
+                } else {
+                    throw new Error(result.error || 'ダウンロードに失敗しました');
+                }
+            } else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        } catch (error) {
+            this.hideSyncProgress();
+            this.showToast(`ダウンロードに失敗しました: ${error.message}`);
+        }
+    }
+
+    showSyncProgress() {
+        this.elements.syncProgress.classList.remove('hidden');
+    }
+
+    hideSyncProgress() {
+        this.elements.syncProgress.classList.add('hidden');
     }
 
     // PWA setup
