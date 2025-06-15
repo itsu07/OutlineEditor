@@ -10,6 +10,11 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="apple-mobile-web-app-title" content="OutlineWriter">
+    
+    <!-- Google API Client Library -->
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://accounts.google.com/gsi/client"></script>
+    <script src="config.js"></script>
 </head>
 <body>
     <!-- ヘッダー -->
@@ -176,30 +181,52 @@
                 <button id="close-drive-dialog" class="close-btn">✕</button>
             </div>
             <div class="dialog-content">
-                <div class="input-group">
-                    <label for="gas-api-url">Google Apps Script API URL:</label>
-                    <input type="url" id="gas-api-url" placeholder="https://script.google.com/macros/s/.../exec">
-                    <small>GASで作成したWebアプリのURLを入力してください</small>
+                <div class="auth-section">
+                    <div class="auth-status" id="auth-status">
+                        <span class="status-indicator offline"></span>
+                        <span class="status-text">Googleアカウント未ログイン</span>
+                    </div>
+                    <button id="google-signin" class="btn primary" style="margin: 16px 0;">
+                        <span>📱</span> Googleアカウントでログイン
+                    </button>
+                    <button id="google-signout" class="btn secondary hidden" style="margin: 16px 0;">
+                        <span>🚪</span> ログアウト
+                    </button>
                 </div>
-                <div class="input-group">
-                    <label for="drive-file-id">Google Drive ファイルID:</label>
-                    <input type="text" id="drive-file-id" placeholder="1A2B3C4D5E6F...">
-                    <small>同期するGoogle DriveファイルのIDを入力してください</small>
+                
+                <div class="file-section" id="file-section" style="display: none;">
+                    <div class="input-group">
+                        <label for="drive-file-name">ファイル名:</label>
+                        <input type="text" id="drive-file-name" placeholder="OutlineWriter-data.json" value="OutlineWriter-data.json">
+                        <small>Google Driveに保存するファイル名</small>
+                    </div>
+                    
+                    <div class="file-info" id="file-info">
+                        <div class="info-item">
+                            <span class="info-label">選択ファイル:</span>
+                            <span id="selected-file-name">未選択</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">最終更新:</span>
+                            <span id="selected-file-modified">-</span>
+                        </div>
+                    </div>
+                    
+                    <div class="file-actions">
+                        <button id="select-drive-file" class="btn secondary">既存ファイルを選択</button>
+                        <button id="create-drive-file" class="btn secondary">新規ファイル作成</button>
+                    </div>
                 </div>
+                
                 <div class="sync-options">
                     <label class="checkbox-label">
                         <input type="checkbox" id="auto-sync">
-                        自動同期を有効にする
+                        アプリ起動時に自動同期
                     </label>
-                </div>
-                <div class="connection-status" id="connection-status">
-                    <span class="status-indicator offline"></span>
-                    <span class="status-text">未接続</span>
                 </div>
             </div>
             <div class="dialog-actions">
-                <button id="test-connection" class="btn secondary">接続テスト</button>
-                <button id="save-drive-config" class="btn primary">設定保存</button>
+                <button id="save-drive-config" class="btn primary" disabled>設定完了</button>
             </div>
         </div>
     </div>
