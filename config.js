@@ -18,7 +18,7 @@ const GOOGLE_CONFIG = {
     CLIENT_ID: '752134953637-kfh5qnplpsb4etd2dui1fgq4snlgkvbp.apps.googleusercontent.com',
     
     // Google Drive APIのスコープ（アプリが作成したファイルのみアクセス + ユーザー情報）
-    SCOPES: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+    SCOPES: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
     
     // Discovery URL for the Drive API
     DISCOVERY_URL: 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'

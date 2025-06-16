@@ -1506,10 +1506,12 @@ class MobileOutlineWriter {
                 client_id: GOOGLE_CONFIG.CLIENT_ID,
                 scope: GOOGLE_CONFIG.SCOPES,
                 callback: (response) => {
+                    console.log('OAuth callback response:', response);
                     if (response.error) {
-                        console.error('OAuth エラー:', response.error);
-                        this.showToast('認証に失敗しました');
+                        console.error('OAuth エラー:', response.error, response.error_description);
+                        this.showToast(`認証に失敗しました: ${response.error}`);
                     } else {
+                        console.log('OAuth 成功、アクセストークン取得済み');
                         this.accessToken = response.access_token;
                         this.onSignInSuccess();
                     }
@@ -1609,22 +1611,35 @@ class MobileOutlineWriter {
             // アクセストークンを設定
             gapi.client.setToken({ access_token: this.accessToken });
             
-            // ユーザー情報を取得（Google People API使用）
-            const response = await gapi.client.request({
-                path: 'https://www.googleapis.com/oauth2/v2/userinfo'
+            // ユーザー情報を直接APIで取得
+            const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
             });
             
-            this.driveConfig.connected = true;
-            this.driveConfig.userEmail = response.result.email;
-            this.driveConfig.userName = response.result.name;
+            if (response.ok) {
+                const userInfo = await response.json();
+                this.driveConfig.connected = true;
+                this.driveConfig.userEmail = userInfo.email;
+                this.driveConfig.userName = userInfo.name;
+                this.showToast(`${userInfo.name}としてログインしました`);
+            } else {
+                // ユーザー情報取得に失敗した場合のフォールバック
+                this.driveConfig.connected = true;
+                this.driveConfig.userEmail = 'user@gmail.com';
+                this.driveConfig.userName = 'ユーザー';
+                this.showToast('ログインしました');
+            }
             
             this.updateAuthStatus();
             this.updateDriveStatus();
-            this.showToast(`${response.result.name}としてログインしました`);
+            
         } catch (error) {
             console.error('ユーザー情報取得エラー:', error);
             this.driveConfig.connected = true;
-            this.driveConfig.userEmail = 'unknown@gmail.com';
+            this.driveConfig.userEmail = 'user@gmail.com';
+            this.driveConfig.userName = 'ユーザー';
             this.updateAuthStatus();
             this.updateDriveStatus();
             this.showToast('ログインしました');
