@@ -25,7 +25,8 @@ class MobileOutlineWriter {
         };
         
         // Google API状態
-        this.googleAuth = null;
+        this.tokenClient = null;
+        this.accessToken = null;
         this.gapiInitialized = false;
         
         this.initializeElements();
@@ -130,6 +131,16 @@ class MobileOutlineWriter {
         this.sidebarOverlay = document.createElement('div');
         this.sidebarOverlay.className = 'sidebar-overlay';
         document.body.appendChild(this.sidebarOverlay);
+        
+        // Debug: Check if critical elements exist
+        console.log('Drive setup dialog element:', this.elements.driveSetupDialog);
+        console.log('Drive setup button element:', this.elements.driveSetupBtn);
+        if (!this.elements.driveSetupDialog) {
+            console.error('Critical: drive-setup-dialog element not found in DOM');
+        }
+        if (!this.elements.driveSetupBtn) {
+            console.error('Critical: drive-setup-mobile element not found in DOM');
+        }
     }
 
     bindEvents() {
@@ -173,7 +184,14 @@ class MobileOutlineWriter {
         this.elements.exportTextBtn.addEventListener('click', () => this.exportAsText());
         
         // Drive events
-        this.elements.driveSetupBtn.addEventListener('click', () => this.openDriveSetupDialog());
+        if (this.elements.driveSetupBtn) {
+            this.elements.driveSetupBtn.addEventListener('click', () => {
+                console.log('Drive setup button clicked');
+                this.openDriveSetupDialog();
+            });
+        } else {
+            console.error('Cannot bind event: driveSetupBtn element not found');
+        }
         this.elements.driveSyncBtn.addEventListener('click', () => this.openSyncDialog());
         this.elements.closeDriveDialog.addEventListener('click', () => this.closeDriveSetupDialog());
         this.elements.closeSyncDialog.addEventListener('click', () => this.closeSyncDialog());
@@ -1471,36 +1489,56 @@ class MobileOutlineWriter {
                 return;
             }
 
-            // Google API Client Library が読み込まれるのを待つ
-            if (typeof gapi === 'undefined') {
-                console.warn('Google API Client Library が読み込まれていません');
-                return;
-            }
+            // Google API Client Library と GIS が読み込まれるのを待つ
+            await this.waitForGoogleAPIs();
 
-            // GAPI を初期化（APIキーなしでOAuth 2.0のみ）
+            // Google Drive API クライアントを初期化
             await new Promise((resolve) => {
-                gapi.load('client:auth2', resolve);
+                gapi.load('client', resolve);
             });
 
             await gapi.client.init({
-                clientId: GOOGLE_CONFIG.CLIENT_ID,
-                discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL],
-                scope: GOOGLE_CONFIG.SCOPES
+                discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL]
             });
 
-            this.googleAuth = gapi.auth2.getAuthInstance();
+            // Google Identity Services を初期化
+            this.tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: GOOGLE_CONFIG.CLIENT_ID,
+                scope: GOOGLE_CONFIG.SCOPES,
+                callback: (response) => {
+                    if (response.error) {
+                        console.error('OAuth エラー:', response.error);
+                        this.showToast('認証に失敗しました');
+                    } else {
+                        this.accessToken = response.access_token;
+                        this.onSignInSuccess();
+                    }
+                }
+            });
+
             this.gapiInitialized = true;
-
-            // 既存のログイン状態をチェック
-            if (this.googleAuth.isSignedIn.get()) {
-                this.onSignInSuccess();
-            }
-
             this.showToast('Google Drive機能が利用可能になりました');
+            
         } catch (error) {
             console.error('Google API初期化エラー:', error);
             this.showToast('Google Drive機能の初期化に失敗しました');
         }
+    }
+
+    async waitForGoogleAPIs() {
+        // gapi と google.accounts の読み込みを待つ
+        let attempts = 0;
+        while (attempts < 50) {
+            if (typeof gapi !== 'undefined' && 
+                typeof google !== 'undefined' && 
+                google.accounts && 
+                google.accounts.oauth2) {
+                return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 100));
+            attempts++;
+        }
+        throw new Error('Google API libraries failed to load');
     }
 
     // Google Drive integration
@@ -1542,9 +1580,8 @@ class MobileOutlineWriter {
         }
 
         try {
-            const authInstance = gapi.auth2.getAuthInstance();
-            await authInstance.signIn();
-            this.onSignInSuccess();
+            // Google Identity Services を使用してトークンを取得
+            this.tokenClient.requestAccessToken();
         } catch (error) {
             console.error('Google ログインエラー:', error);
             this.showToast('Googleログインに失敗しました');
@@ -1555,8 +1592,11 @@ class MobileOutlineWriter {
         if (!this.gapiInitialized) return;
 
         try {
-            const authInstance = gapi.auth2.getAuthInstance();
-            await authInstance.signOut();
+            // アクセストークンを無効化
+            if (this.accessToken) {
+                google.accounts.oauth2.revoke(this.accessToken);
+                this.accessToken = null;
+            }
             this.onSignOutSuccess();
         } catch (error) {
             console.error('Google ログアウトエラー:', error);
@@ -1564,16 +1604,31 @@ class MobileOutlineWriter {
         }
     }
 
-    onSignInSuccess() {
-        const user = this.googleAuth.currentUser.get();
-        const profile = user.getBasicProfile();
-        
-        this.driveConfig.connected = true;
-        this.driveConfig.userEmail = profile.getEmail();
-        
-        this.updateAuthStatus();
-        this.updateDriveStatus();
-        this.showToast(`${profile.getName()}としてログインしました`);
+    async onSignInSuccess() {
+        try {
+            // アクセストークンを設定
+            gapi.client.setToken({ access_token: this.accessToken });
+            
+            // ユーザー情報を取得（Google People API使用）
+            const response = await gapi.client.request({
+                path: 'https://www.googleapis.com/oauth2/v2/userinfo'
+            });
+            
+            this.driveConfig.connected = true;
+            this.driveConfig.userEmail = response.result.email;
+            this.driveConfig.userName = response.result.name;
+            
+            this.updateAuthStatus();
+            this.updateDriveStatus();
+            this.showToast(`${response.result.name}としてログインしました`);
+        } catch (error) {
+            console.error('ユーザー情報取得エラー:', error);
+            this.driveConfig.connected = true;
+            this.driveConfig.userEmail = 'unknown@gmail.com';
+            this.updateAuthStatus();
+            this.updateDriveStatus();
+            this.showToast('ログインしました');
+        }
     }
 
     onSignOutSuccess() {
@@ -1633,17 +1688,49 @@ class MobileOutlineWriter {
 
     // ダイアログ管理
     openDriveSetupDialog() {
-        this.elements.driveFileName.value = this.driveConfig.fileName || 'OutlineWriter-data.json';
-        this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
+        console.log('openDriveSetupDialog called');
+        console.log('driveSetupDialog element:', this.elements.driveSetupDialog);
         
-        this.updateAuthStatus();
-        this.updateFileInfo();
-        this.elements.driveSetupDialog.classList.remove('hidden');
-        this.closeMenu();
+        if (!this.elements.driveSetupDialog) {
+            console.error('Drive setup dialog element not found');
+            this.showToast('ダイアログ要素が見つかりません');
+            return;
+        }
+        
+        try {
+            this.elements.driveFileName.value = this.driveConfig.fileName || 'OutlineWriter-data.json';
+            this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
+            
+            this.updateAuthStatus();
+            this.updateFileInfo();
+            
+            console.log('Removing hidden class from dialog');
+            this.elements.driveSetupDialog.classList.remove('hidden');
+            
+            // Force display to ensure visibility
+            this.elements.driveSetupDialog.style.display = 'block';
+            this.elements.driveSetupDialog.style.opacity = '1';
+            this.elements.driveSetupDialog.style.pointerEvents = 'auto';
+            
+            console.log('Dialog classes after removal:', this.elements.driveSetupDialog.className);
+            console.log('Dialog computed display:', window.getComputedStyle(this.elements.driveSetupDialog).display);
+            console.log('Dialog computed opacity:', window.getComputedStyle(this.elements.driveSetupDialog).opacity);
+            
+            this.closeMenu();
+        } catch (error) {
+            console.error('Error opening drive setup dialog:', error);
+            this.showToast('ダイアログを開く際にエラーが発生しました');
+        }
     }
 
     closeDriveSetupDialog() {
+        console.log('Closing drive setup dialog');
         this.elements.driveSetupDialog.classList.add('hidden');
+        
+        // Remove forced styles to let CSS take over
+        this.elements.driveSetupDialog.style.display = '';
+        this.elements.driveSetupDialog.style.opacity = '';
+        this.elements.driveSetupDialog.style.pointerEvents = '';
     }
 
     openSyncDialog() {
