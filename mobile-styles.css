@@ -638,6 +638,372 @@ body {
     white-space: nowrap;
 }
 
+/* Drive Dialog Styles */
+.auth-section {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: var(--bg-color);
+    border-radius: var(--border-radius);
+}
+
+.auth-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px;
+    font-size: 14px;
+}
+
+.file-section {
+    margin-bottom: 20px;
+}
+
+.file-info {
+    background: var(--bg-color);
+    border-radius: var(--border-radius);
+    padding: 12px;
+    margin: 16px 0;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 14px;
+}
+
+.info-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.file-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.file-actions .btn {
+    margin: 0;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--divider-color) !important;
+}
+
+.drive-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+    transition: var(--transition);
+}
+
+.drive-dialog.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.dialog-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+}
+
+.dialog-panel {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--surface-color);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 480px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-heavy);
+    z-index: 10000;
+}
+
+/* モバイル環境での調整 */
+@media (max-width: 768px) {
+    .dialog-panel {
+        width: 95%;
+        max-height: 90vh;
+        top: 50%;
+        transform: translate(-50%, -50%);
+    }
+}
+
+.dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--divider-color);
+}
+
+.dialog-header h3 {
+    font-size: 18px;
+    font-weight: 500;
+    margin: 0;
+}
+
+.dialog-content {
+    padding: 24px;
+}
+
+.input-group {
+    margin-bottom: 20px;
+}
+
+.input-group label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--text-color);
+}
+
+.input-group input[type="text"],
+.input-group input[type="url"] {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--border-radius);
+    font-size: 14px;
+    background: var(--surface-color);
+    color: var(--text-color);
+    transition: var(--transition);
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+}
+
+.input-group small {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.sync-options {
+    margin: 20px 0;
+}
+
+.connection-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: var(--bg-color);
+    border-radius: var(--border-radius);
+    margin-top: 16px;
+}
+
+.status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger-color);
+    animation: pulse 2s infinite;
+}
+
+.status-indicator.online {
+    background: var(--success-color);
+    animation: none;
+}
+
+.status-indicator.offline {
+    background: var(--danger-color);
+}
+
+.status-text {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.dialog-actions {
+    display: flex;
+    gap: 12px;
+    padding: 16px 24px 24px;
+    border-top: 1px solid var(--divider-color);
+}
+
+.btn {
+    flex: 1;
+    padding: 12px 20px;
+    border: none;
+    border-radius: var(--border-radius);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+    min-height: var(--touch-target);
+}
+
+.btn.primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn.primary:hover {
+    background: var(--primary-dark);
+}
+
+.btn.secondary {
+    background: transparent;
+    color: var(--primary-color);
+    border: 1px solid var(--primary-color);
+}
+
+.btn.secondary:hover {
+    background: rgba(33, 150, 243, 0.05);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Sync Dialog Styles */
+.sync-info {
+    background: var(--bg-color);
+    border-radius: var(--border-radius);
+    padding: 16px;
+    margin-bottom: 20px;
+}
+
+.sync-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.sync-item:last-child {
+    margin-bottom: 0;
+}
+
+.sync-label {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.sync-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.sync-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--border-radius);
+    background: var(--surface-color);
+    color: var(--text-color);
+    font-size: 16px;
+    cursor: pointer;
+    transition: var(--transition);
+    min-height: var(--touch-target);
+}
+
+.sync-btn:hover {
+    background: var(--bg-color);
+    border-color: var(--primary-color);
+}
+
+.sync-btn:active {
+    transform: scale(0.98);
+}
+
+.sync-icon {
+    font-size: 20px;
+}
+
+.sync-progress {
+    text-align: center;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--divider-color);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--primary-color);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+    animation: progress-animation 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-animation {
+    0% { width: 0%; }
+    50% { width: 70%; }
+    100% { width: 100%; }
+}
+
+.progress-text {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+/* Drive Status in Menu */
+.drive-status {
+    position: relative;
+}
+
+.drive-status::after {
+    content: '';
+    position: absolute;
+    top: -2px;
+    right: -8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger-color);
+}
+
+.drive-status.connected::after {
+    background: var(--success-color);
+}
+
+/* Menu item disabled state */
+.menu-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: none !important;
+}
+
+/* Pulse animation */
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
 /* Utility Classes */
 .hidden {
     display: none !important;

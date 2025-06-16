@@ -1775,7 +1775,13 @@ class MobileOutlineWriter {
             console.log('Removing hidden class from dialog');
             this.elements.driveSetupDialog.classList.remove('hidden');
             
-            // Force display to ensure visibility
+            // Force display to ensure visibility - ポップアップとして最前面に表示
+            this.elements.driveSetupDialog.style.position = 'fixed';
+            this.elements.driveSetupDialog.style.top = '0';
+            this.elements.driveSetupDialog.style.left = '0';
+            this.elements.driveSetupDialog.style.right = '0';
+            this.elements.driveSetupDialog.style.bottom = '0';
+            this.elements.driveSetupDialog.style.zIndex = '9999';
             this.elements.driveSetupDialog.style.display = 'block';
             this.elements.driveSetupDialog.style.opacity = '1';
             this.elements.driveSetupDialog.style.pointerEvents = 'auto';
@@ -1795,7 +1801,13 @@ class MobileOutlineWriter {
         console.log('Closing drive setup dialog');
         this.elements.driveSetupDialog.classList.add('hidden');
         
-        // Remove forced styles to let CSS take over
+        // Remove all forced styles to let CSS take over
+        this.elements.driveSetupDialog.style.position = '';
+        this.elements.driveSetupDialog.style.top = '';
+        this.elements.driveSetupDialog.style.left = '';
+        this.elements.driveSetupDialog.style.right = '';
+        this.elements.driveSetupDialog.style.bottom = '';
+        this.elements.driveSetupDialog.style.zIndex = '';
         this.elements.driveSetupDialog.style.display = '';
         this.elements.driveSetupDialog.style.opacity = '';
         this.elements.driveSetupDialog.style.pointerEvents = '';
