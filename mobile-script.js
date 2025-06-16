@@ -38,7 +38,12 @@ class MobileOutlineWriter {
         this.saveToHistory();
         this.startAutoBackup();
         this.setupPWA();
-        this.initializeGoogleAPI();
+        
+        // Google API初期化は少し遅延させる
+        setTimeout(() => {
+            console.log('Google API初期化を開始...');
+            this.initializeGoogleAPI();
+        }, 1000);
     }
 
     initializeElements() {
@@ -195,7 +200,10 @@ class MobileOutlineWriter {
         this.elements.driveSyncBtn.addEventListener('click', () => this.openSyncDialog());
         this.elements.closeDriveDialog.addEventListener('click', () => this.closeDriveSetupDialog());
         this.elements.closeSyncDialog.addEventListener('click', () => this.closeSyncDialog());
-        this.elements.googleSignin.addEventListener('click', () => this.signInToGoogle());
+        this.elements.googleSignin.addEventListener('click', () => {
+            console.log('Google ログインボタンがクリックされました');
+            this.signInToGoogle();
+        });
         this.elements.googleSignout.addEventListener('click', () => this.signOutFromGoogle());
         this.elements.selectDriveFile.addEventListener('click', () => this.selectExistingFile());
         this.elements.createDriveFile.addEventListener('click', () => this.createNewFile());
@@ -1481,66 +1489,99 @@ class MobileOutlineWriter {
 
     // Google API initialization
     async initializeGoogleAPI() {
+        console.log('Google API初期化処理を開始...');
+        
         try {
             // 設定の検証
+            console.log('設定の検証中...');
             if (typeof GOOGLE_CONFIG === 'undefined' || !validateGoogleConfig()) {
                 console.warn('Google Drive機能は利用できません。config.jsを設定してください。');
                 console.log(SETUP_INSTRUCTIONS);
                 return;
             }
+            console.log('設定検証完了');
 
             // Google API Client Library と GIS が読み込まれるのを待つ
+            console.log('Google APIライブラリの読み込み待機中...');
             await this.waitForGoogleAPIs();
+            console.log('Google APIライブラリ読み込み完了');
 
             // Google Drive API クライアントを初期化
+            console.log('gapi.client初期化中...');
             await new Promise((resolve) => {
                 gapi.load('client', resolve);
             });
+            console.log('gapi.client初期化完了');
 
-            await gapi.client.init({
-                discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL]
-            });
+            console.log('Google Client初期化中...');
+            try {
+                // ローカル環境では簡素な初期化
+                if (location.protocol === 'file:') {
+                    console.log('ローカル環境を検出、簡素な初期化を実行...');
+                    await gapi.client.init({});
+                } else {
+                    await gapi.client.init({
+                        discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL]
+                    });
+                }
+                console.log('Google Client初期化完了');
+            } catch (initError) {
+                console.error('gapi.client.init エラー:', initError);
+                // 最小限の初期化で再試行
+                console.log('最小限の初期化で再試行...');
+                await gapi.client.init({});
+                console.log('Google Client初期化完了（最小限）');
+            }
 
             // Google Identity Services を初期化
+            console.log('tokenClient初期化中...');
             this.tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: GOOGLE_CONFIG.CLIENT_ID,
                 scope: GOOGLE_CONFIG.SCOPES,
                 callback: (response) => {
-                    console.log('OAuth callback response:', response);
+                    console.log('OAuth callback:', response);
                     if (response.error) {
-                        console.error('OAuth エラー:', response.error, response.error_description);
+                        console.error('OAuth エラー:', response.error);
                         this.showToast(`認証に失敗しました: ${response.error}`);
                     } else {
-                        console.log('OAuth 成功、アクセストークン取得済み');
+                        console.log('OAuth 成功');
                         this.accessToken = response.access_token;
                         this.onSignInSuccess();
                     }
                 }
             });
+            console.log('tokenClient初期化完了');
 
             this.gapiInitialized = true;
+            console.log('Google API初期化が完全に完了しました');
             this.showToast('Google Drive機能が利用可能になりました');
             
         } catch (error) {
             console.error('Google API初期化エラー:', error);
-            this.showToast('Google Drive機能の初期化に失敗しました');
+            this.gapiInitialized = false;
+            this.showToast(`Google Drive機能の初期化に失敗しました: ${error.message}`);
         }
     }
 
     async waitForGoogleAPIs() {
         // gapi と google.accounts の読み込みを待つ
         let attempts = 0;
-        while (attempts < 50) {
+        const maxAttempts = 100; // 10秒まで待機
+        
+        while (attempts < maxAttempts) {
             if (typeof gapi !== 'undefined' && 
                 typeof google !== 'undefined' && 
                 google.accounts && 
-                google.accounts.oauth2) {
+                google.accounts.oauth2 &&
+                typeof google.accounts.oauth2.initTokenClient === 'function') {
+                console.log('Google API libraries loaded successfully');
                 return;
             }
+            console.log(`Google APIs loading... attempt ${attempts + 1}/${maxAttempts}`);
             await new Promise(resolve => setTimeout(resolve, 100));
             attempts++;
         }
-        throw new Error('Google API libraries failed to load');
+        throw new Error('Google API libraries failed to load after 10 seconds');
     }
 
     // Google Drive integration
@@ -1576,12 +1617,24 @@ class MobileOutlineWriter {
 
     // Google 認証関連
     async signInToGoogle() {
+        console.log('signInToGoogle() が呼ばれました');
+        console.log('gapiInitialized:', this.gapiInitialized);
+        console.log('tokenClient:', this.tokenClient);
+        
         if (!this.gapiInitialized) {
+            console.error('Google APIが初期化されていません');
             this.showToast('Google APIが初期化されていません');
             return;
         }
 
+        if (!this.tokenClient) {
+            console.error('tokenClientが初期化されていません');
+            this.showToast('認証クライアントが初期化されていません');
+            return;
+        }
+
         try {
+            console.log('トークン取得を開始...');
             // Google Identity Services を使用してトークンを取得
             this.tokenClient.requestAccessToken();
         } catch (error) {
@@ -1846,7 +1899,7 @@ class MobileOutlineWriter {
             const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
                 method: 'POST',
                 headers: new Headers({
-                    'Authorization': `Bearer ${gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token}`
+                    'Authorization': `Bearer ${this.accessToken}`
                 }),
                 body: form
             });
