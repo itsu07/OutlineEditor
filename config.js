@@ -15,7 +15,7 @@
 const GOOGLE_CONFIG = {
     // OAuth 2.0 クライアントID
     // 承認済みJavaScriptの生成元にドメインを追加済みであることを確認
-    CLIENT_ID: 'YOUR_CLIENT_ID_HERE.apps.googleusercontent.com',
+    CLIENT_ID: '752134953637-kfh5qnplpsb4etd2dui1fgq4snlgkvbp.apps.googleusercontent.com',
     
     // Google Drive APIのスコープ（アプリが作成したファイルのみアクセス）
     SCOPES: 'https://www.googleapis.com/auth/drive.file',
