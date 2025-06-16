@@ -16,12 +16,17 @@ class MobileOutlineWriter {
         
         // Google Drive integration
         this.driveConfig = {
-            apiUrl: '', // GASのAPIエンドポイントURL
-            fileId: '', // Google DriveのファイルID
+            fileName: 'OutlineWriter-data.json',
+            fileId: '',
             connected: false,
             syncEnabled: false,
-            lastSync: null
+            lastSync: null,
+            userEmail: ''
         };
+        
+        // Google API状態
+        this.googleAuth = null;
+        this.gapiInitialized = false;
         
         this.initializeElements();
         this.bindEvents();
@@ -32,6 +37,7 @@ class MobileOutlineWriter {
         this.saveToHistory();
         this.startAutoBackup();
         this.setupPWA();
+        this.initializeGoogleAPI();
     }
 
     initializeElements() {
@@ -87,11 +93,16 @@ class MobileOutlineWriter {
             // Drive setup dialog
             driveSetupDialog: document.getElementById('drive-setup-dialog'),
             closeDriveDialog: document.getElementById('close-drive-dialog'),
-            gasApiUrl: document.getElementById('gas-api-url'),
-            driveFileId: document.getElementById('drive-file-id'),
+            authStatus: document.getElementById('auth-status'),
+            googleSignin: document.getElementById('google-signin'),
+            googleSignout: document.getElementById('google-signout'),
+            fileSection: document.getElementById('file-section'),
+            driveFileName: document.getElementById('drive-file-name'),
+            selectedFileName: document.getElementById('selected-file-name'),
+            selectedFileModified: document.getElementById('selected-file-modified'),
+            selectDriveFile: document.getElementById('select-drive-file'),
+            createDriveFile: document.getElementById('create-drive-file'),
             autoSync: document.getElementById('auto-sync'),
-            connectionStatus: document.getElementById('connection-status'),
-            testConnection: document.getElementById('test-connection'),
             saveDriveConfig: document.getElementById('save-drive-config'),
             
             // Sync dialog
@@ -166,7 +177,10 @@ class MobileOutlineWriter {
         this.elements.driveSyncBtn.addEventListener('click', () => this.openSyncDialog());
         this.elements.closeDriveDialog.addEventListener('click', () => this.closeDriveSetupDialog());
         this.elements.closeSyncDialog.addEventListener('click', () => this.closeSyncDialog());
-        this.elements.testConnection.addEventListener('click', () => this.testDriveConnection());
+        this.elements.googleSignin.addEventListener('click', () => this.signInToGoogle());
+        this.elements.googleSignout.addEventListener('click', () => this.signOutFromGoogle());
+        this.elements.selectDriveFile.addEventListener('click', () => this.selectExistingFile());
+        this.elements.createDriveFile.addEventListener('click', () => this.createNewFile());
         this.elements.saveDriveConfig.addEventListener('click', () => this.saveDriveConfig());
         this.elements.uploadToDrive.addEventListener('click', () => this.uploadToDrive());
         this.elements.downloadFromDrive.addEventListener('click', () => this.downloadFromDrive());
@@ -1447,12 +1461,58 @@ class MobileOutlineWriter {
         }
     }
 
+    // Google API initialization
+    async initializeGoogleAPI() {
+        try {
+            // 設定の検証
+            if (typeof GOOGLE_CONFIG === 'undefined' || !validateGoogleConfig()) {
+                console.warn('Google Drive機能は利用できません。config.jsを設定してください。');
+                console.log(SETUP_INSTRUCTIONS);
+                return;
+            }
+
+            // Google API Client Library が読み込まれるのを待つ
+            if (typeof gapi === 'undefined') {
+                console.warn('Google API Client Library が読み込まれていません');
+                return;
+            }
+
+            // GAPI を初期化（APIキーなしでOAuth 2.0のみ）
+            await new Promise((resolve) => {
+                gapi.load('client:auth2', resolve);
+            });
+
+            await gapi.client.init({
+                clientId: GOOGLE_CONFIG.CLIENT_ID,
+                discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL],
+                scope: GOOGLE_CONFIG.SCOPES
+            });
+
+            this.googleAuth = gapi.auth2.getAuthInstance();
+            this.gapiInitialized = true;
+
+            // 既存のログイン状態をチェック
+            if (this.googleAuth.isSignedIn.get()) {
+                this.onSignInSuccess();
+            }
+
+            this.showToast('Google Drive機能が利用可能になりました');
+        } catch (error) {
+            console.error('Google API初期化エラー:', error);
+            this.showToast('Google Drive機能の初期化に失敗しました');
+        }
+    }
+
     // Google Drive integration
     loadConfig() {
         try {
             const saved = localStorage.getItem('outlinewriter-drive-config');
             if (saved) {
-                this.driveConfig = { ...this.driveConfig, ...JSON.parse(saved) };
+                const savedConfig = JSON.parse(saved);
+                // ファイル関連の設定のみを読み込み（API設定は不要）
+                this.driveConfig.fileName = savedConfig.fileName || this.driveConfig.fileName;
+                this.driveConfig.fileId = savedConfig.fileId || this.driveConfig.fileId;
+                this.driveConfig.lastSync = savedConfig.lastSync || this.driveConfig.lastSync;
                 this.updateDriveStatus();
             }
         } catch (e) {
@@ -1462,17 +1522,100 @@ class MobileOutlineWriter {
 
     saveConfig() {
         try {
-            localStorage.setItem('outlinewriter-drive-config', JSON.stringify(this.driveConfig));
+            // ファイル関連の設定のみを保存（API設定は不要）
+            const configToSave = {
+                fileName: this.driveConfig.fileName,
+                fileId: this.driveConfig.fileId,
+                lastSync: this.driveConfig.lastSync
+            };
+            localStorage.setItem('outlinewriter-drive-config', JSON.stringify(configToSave));
         } catch (e) {
             console.error('Drive設定の保存に失敗しました:', e);
         }
+    }
+
+    // Google 認証関連
+    async signInToGoogle() {
+        if (!this.gapiInitialized) {
+            this.showToast('Google APIが初期化されていません');
+            return;
+        }
+
+        try {
+            const authInstance = gapi.auth2.getAuthInstance();
+            await authInstance.signIn();
+            this.onSignInSuccess();
+        } catch (error) {
+            console.error('Google ログインエラー:', error);
+            this.showToast('Googleログインに失敗しました');
+        }
+    }
+
+    async signOutFromGoogle() {
+        if (!this.gapiInitialized) return;
+
+        try {
+            const authInstance = gapi.auth2.getAuthInstance();
+            await authInstance.signOut();
+            this.onSignOutSuccess();
+        } catch (error) {
+            console.error('Google ログアウトエラー:', error);
+            this.showToast('ログアウトに失敗しました');
+        }
+    }
+
+    onSignInSuccess() {
+        const user = this.googleAuth.currentUser.get();
+        const profile = user.getBasicProfile();
+        
+        this.driveConfig.connected = true;
+        this.driveConfig.userEmail = profile.getEmail();
+        
+        this.updateAuthStatus();
+        this.updateDriveStatus();
+        this.showToast(`${profile.getName()}としてログインしました`);
+    }
+
+    onSignOutSuccess() {
+        this.driveConfig.connected = false;
+        this.driveConfig.userEmail = '';
+        this.driveConfig.fileId = '';
+        
+        this.updateAuthStatus();
+        this.updateDriveStatus();
+        this.showToast('ログアウトしました');
+    }
+
+    updateAuthStatus() {
+        const indicator = this.elements.authStatus.querySelector('.status-indicator');
+        const text = this.elements.authStatus.querySelector('.status-text');
+        
+        if (this.driveConfig.connected) {
+            indicator.classList.remove('offline');
+            indicator.classList.add('online');
+            text.textContent = `ログイン中: ${this.driveConfig.userEmail}`;
+            
+            this.elements.googleSignin.classList.add('hidden');
+            this.elements.googleSignout.classList.remove('hidden');
+            this.elements.fileSection.style.display = 'block';
+        } else {
+            indicator.classList.remove('online');
+            indicator.classList.add('offline');
+            text.textContent = 'Googleアカウント未ログイン';
+            
+            this.elements.googleSignin.classList.remove('hidden');
+            this.elements.googleSignout.classList.add('hidden');
+            this.elements.fileSection.style.display = 'none';
+        }
+        
+        this.updateSaveButtonState();
     }
 
     updateDriveStatus() {
         const statusElement = this.elements.driveStatus;
         const syncButton = this.elements.driveSyncBtn;
         
-        if (this.driveConfig.connected) {
+        if (this.driveConfig.connected && this.driveConfig.fileId) {
             statusElement.classList.add('connected');
             syncButton.disabled = false;
         } else {
@@ -1481,12 +1624,20 @@ class MobileOutlineWriter {
         }
     }
 
+    updateSaveButtonState() {
+        const saveButton = this.elements.saveDriveConfig;
+        const canSave = this.driveConfig.connected && this.driveConfig.fileId;
+        
+        saveButton.disabled = !canSave;
+    }
+
+    // ダイアログ管理
     openDriveSetupDialog() {
-        this.elements.gasApiUrl.value = this.driveConfig.apiUrl || '';
-        this.elements.driveFileId.value = this.driveConfig.fileId || '';
+        this.elements.driveFileName.value = this.driveConfig.fileName || 'OutlineWriter-data.json';
         this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
         
-        this.updateConnectionStatus();
+        this.updateAuthStatus();
+        this.updateFileInfo();
         this.elements.driveSetupDialog.classList.remove('hidden');
         this.closeMenu();
     }
@@ -1505,75 +1656,124 @@ class MobileOutlineWriter {
         this.elements.syncDialog.classList.add('hidden');
     }
 
-    updateConnectionStatus() {
-        const statusElement = this.elements.connectionStatus;
-        const indicator = statusElement.querySelector('.status-indicator');
-        const text = statusElement.querySelector('.status-text');
-        
-        if (this.driveConfig.connected) {
-            indicator.classList.remove('offline');
-            indicator.classList.add('online');
-            text.textContent = '接続済み';
+    updateFileInfo() {
+        if (this.driveConfig.fileId) {
+            this.elements.selectedFileName.textContent = this.driveConfig.fileName || '設定済み';
+            this.elements.selectedFileModified.textContent = this.driveConfig.lastSync || '不明';
         } else {
-            indicator.classList.remove('online');
-            indicator.classList.add('offline');
-            text.textContent = '未接続';
+            this.elements.selectedFileName.textContent = '未選択';
+            this.elements.selectedFileModified.textContent = '-';
         }
     }
 
-    async testDriveConnection() {
-        const apiUrl = this.elements.gasApiUrl.value.trim();
-        const fileId = this.elements.driveFileId.value.trim();
-        
-        if (!apiUrl || !fileId) {
-            this.showToast('APIのURLとファイルIDを入力してください');
+    // ファイル操作
+    async selectExistingFile() {
+        if (!this.gapiInitialized || !this.driveConfig.connected) {
+            this.showToast('まずGoogleアカウントにログインしてください');
             return;
         }
 
         try {
-            const response = await fetch(apiUrl, {
+            // Drive内のJSONファイルを検索
+            const response = await gapi.client.drive.files.list({
+                q: "name contains '.json' and mimeType='application/json'",
+                pageSize: 10,
+                fields: 'files(id, name, modifiedTime)'
+            });
+
+            const files = response.result.files;
+            if (files.length === 0) {
+                this.showToast('JSONファイルが見つかりません');
+                return;
+            }
+
+            // 簡単なファイル選択（実際のアプリではより洗練されたUIを使用）
+            let fileList = 'ファイルを選択してください:\n\n';
+            files.forEach((file, index) => {
+                const modifiedDate = new Date(file.modifiedTime).toLocaleString('ja-JP');
+                fileList += `${index + 1}. ${file.name} (${modifiedDate})\n`;
+            });
+
+            const selection = prompt(fileList + '\n番号を入力してください:');
+            const index = parseInt(selection) - 1;
+
+            if (index >= 0 && index < files.length) {
+                const selectedFile = files[index];
+                this.driveConfig.fileId = selectedFile.id;
+                this.driveConfig.fileName = selectedFile.name;
+                
+                this.updateFileInfo();
+                this.updateDriveStatus();
+                this.showToast(`ファイル「${selectedFile.name}」を選択しました`);
+            }
+        } catch (error) {
+            console.error('ファイル選択エラー:', error);
+            this.showToast('ファイルの選択に失敗しました');
+        }
+    }
+
+    async createNewFile() {
+        if (!this.gapiInitialized || !this.driveConfig.connected) {
+            this.showToast('まずGoogleアカウントにログインしてください');
+            return;
+        }
+
+        const fileName = this.elements.driveFileName.value.trim();
+        if (!fileName) {
+            this.showToast('ファイル名を入力してください');
+            return;
+        }
+
+        try {
+            // 初期データを作成
+            const initialData = {
+                data: this.data,
+                timestamp: new Date().toLocaleString('ja-JP'),
+                version: '2.1'
+            };
+
+            const fileMetadata = {
+                name: fileName,
+                parents: ['root'] // ルートフォルダに作成
+            };
+
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(fileMetadata)], {type: 'application/json'}));
+            form.append('file', new Blob([JSON.stringify(initialData, null, 2)], {type: 'application/json'}));
+
+            const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    action: 'test',
-                    fileId: fileId
-                })
+                headers: new Headers({
+                    'Authorization': `Bearer ${gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token}`
+                }),
+                body: form
             });
 
             if (response.ok) {
                 const result = await response.json();
-                if (result.success) {
-                    this.driveConfig.connected = true;
-                    this.updateConnectionStatus();
-                    this.showToast('接続テストに成功しました');
-                } else {
-                    throw new Error(result.error || '接続テストに失敗しました');
-                }
+                this.driveConfig.fileId = result.id;
+                this.driveConfig.fileName = fileName;
+                
+                this.updateFileInfo();
+                this.updateDriveStatus();
+                this.showToast(`ファイル「${fileName}」を作成しました`);
             } else {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
         } catch (error) {
-            this.driveConfig.connected = false;
-            this.updateConnectionStatus();
-            this.showToast(`接続テストに失敗しました: ${error.message}`);
+            console.error('ファイル作成エラー:', error);
+            this.showToast('ファイルの作成に失敗しました');
         }
     }
 
     saveDriveConfig() {
-        const apiUrl = this.elements.gasApiUrl.value.trim();
-        const fileId = this.elements.driveFileId.value.trim();
-        const autoSync = this.elements.autoSync.checked;
-
-        if (!apiUrl || !fileId) {
-            this.showToast('APIのURLとファイルIDを入力してください');
+        if (!this.driveConfig.connected || !this.driveConfig.fileId) {
+            this.showToast('ログインとファイル選択を完了してください');
             return;
         }
 
-        this.driveConfig.apiUrl = apiUrl;
-        this.driveConfig.fileId = fileId;
-        this.driveConfig.syncEnabled = autoSync;
+        this.driveConfig.fileName = this.elements.driveFileName.value.trim();
+        this.driveConfig.syncEnabled = this.elements.autoSync.checked;
 
         this.saveConfig();
         this.updateDriveStatus();
@@ -1594,41 +1794,32 @@ class MobileOutlineWriter {
     }
 
     async fetchDriveTimestamp() {
-        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
+        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
             this.elements.driveTimestamp.textContent = '未設定';
             return;
         }
 
         try {
-            const response = await fetch(this.driveConfig.apiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    action: 'getTimestamp',
-                    fileId: this.driveConfig.fileId
-                })
+            const response = await gapi.client.drive.files.get({
+                fileId: this.driveConfig.fileId,
+                fields: 'modifiedTime'
             });
 
-            if (response.ok) {
-                const result = await response.json();
-                if (result.success) {
-                    this.elements.driveTimestamp.textContent = result.timestamp || 'なし';
-                } else {
-                    this.elements.driveTimestamp.textContent = 'エラー';
-                }
+            if (response.status === 200) {
+                const modifiedTime = new Date(response.result.modifiedTime).toLocaleString('ja-JP');
+                this.elements.driveTimestamp.textContent = modifiedTime;
             } else {
                 this.elements.driveTimestamp.textContent = 'エラー';
             }
         } catch (error) {
+            console.error('タイムスタンプ取得エラー:', error);
             this.elements.driveTimestamp.textContent = 'エラー';
         }
     }
 
     async uploadToDrive() {
-        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
-            this.showToast('Driveが設定されていません');
+        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
+            this.showToast('Drive設定を完了してください');
             return;
         }
 
@@ -1637,99 +1828,90 @@ class MobileOutlineWriter {
         try {
             const dataToUpload = {
                 data: this.data,
-                timestamp: new Date().toLocaleString('ja-JP')
+                timestamp: new Date().toLocaleString('ja-JP'),
+                version: '2.1'
             };
 
-            const response = await fetch(this.driveConfig.apiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
+            const response = await gapi.client.request({
+                path: `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.fileId}`,
+                method: 'PATCH',
+                params: {
+                    uploadType: 'media'
                 },
-                body: JSON.stringify({
-                    action: 'upload',
-                    fileId: this.driveConfig.fileId,
-                    data: JSON.stringify(dataToUpload)
-                })
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(dataToUpload, null, 2)
             });
 
-            if (response.ok) {
-                const result = await response.json();
-                if (result.success) {
-                    this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
-                    this.saveConfig();
-                    this.hideSyncProgress();
-                    this.updateSyncInfo();
-                    this.showToast('Driveにアップロードしました');
-                } else {
-                    throw new Error(result.error || 'アップロードに失敗しました');
-                }
+            if (response.status === 200) {
+                this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+                this.saveConfig();
+                
+                // ローカルタイムスタンプも更新
+                localStorage.setItem('outlinewriter-data-timestamp', dataToUpload.timestamp);
+                
+                this.hideSyncProgress();
+                this.updateSyncInfo();
+                this.showToast('Driveにアップロードしました');
             } else {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
         } catch (error) {
             this.hideSyncProgress();
+            console.error('アップロードエラー:', error);
             this.showToast(`アップロードに失敗しました: ${error.message}`);
         }
     }
 
     async downloadFromDrive() {
-        if (!this.driveConfig.connected || !this.driveConfig.apiUrl || !this.driveConfig.fileId) {
-            this.showToast('Driveが設定されていません');
+        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
+            this.showToast('Drive設定を完了してください');
             return;
         }
 
         this.showSyncProgress();
 
         try {
-            const response = await fetch(this.driveConfig.apiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    action: 'download',
-                    fileId: this.driveConfig.fileId
-                })
+            const response = await gapi.client.drive.files.get({
+                fileId: this.driveConfig.fileId,
+                alt: 'media'
             });
 
-            if (response.ok) {
-                const result = await response.json();
-                if (result.success && result.data) {
-                    const driveData = JSON.parse(result.data);
+            if (response.status === 200) {
+                const driveData = JSON.parse(response.body);
+                
+                if (driveData.data) {
+                    this.data = driveData.data;
+                    this.currentItem = null;
+                    this.elements.currentTitle.value = '';
+                    this.elements.currentContent.value = '';
+                    this.elements.isHeading.checked = false;
+                    this.updateHierarchyPaths();
+                    this.renderOutline();
+                    this.updateCharCount();
+                    this.updateButtonStates();
+                    this.updateBreadcrumb();
+                    this.saveToHistory();
                     
-                    if (driveData.data) {
-                        this.data = driveData.data;
-                        this.currentItem = null;
-                        this.elements.currentTitle.value = '';
-                        this.elements.currentContent.value = '';
-                        this.elements.isHeading.checked = false;
-                        this.updateHierarchyPaths();
-                        this.renderOutline();
-                        this.updateCharCount();
-                        this.updateButtonStates();
-                        this.updateBreadcrumb();
-                        this.saveToHistory();
-                        
-                        this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
-                        this.saveConfig();
-                        
-                        // Save local timestamp
-                        localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
-                        
-                        this.hideSyncProgress();
-                        this.updateSyncInfo();
-                        this.showToast('Driveからダウンロードしました');
-                    } else {
-                        throw new Error('無効なデータ形式です');
-                    }
+                    this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+                    this.saveConfig();
+                    
+                    // ローカルタイムスタンプを更新
+                    localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
+                    
+                    this.hideSyncProgress();
+                    this.updateSyncInfo();
+                    this.showToast('Driveからダウンロードしました');
                 } else {
-                    throw new Error(result.error || 'ダウンロードに失敗しました');
+                    throw new Error('無効なデータ形式です');
                 }
             } else {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
         } catch (error) {
             this.hideSyncProgress();
+            console.error('ダウンロードエラー:', error);
             this.showToast(`ダウンロードに失敗しました: ${error.message}`);
         }
     }
