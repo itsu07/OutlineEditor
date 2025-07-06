@@ -925,10 +925,16 @@ class MobileOutlineWriter {
 
     // Include all hierarchy management methods from main script
     updateHierarchyPaths() {
+        if (!this.data || !this.data.items) {
+            return;
+        }
         this.updateItemHierarchy(this.data.items, '', 0);
     }
 
     updateItemHierarchy(items, parentPath, level) {
+        if (!items || !Array.isArray(items)) {
+            return;
+        }
         items.forEach((item, index) => {
             const position = index + 1;
             const currentPath = parentPath ? `${parentPath}.${position}` : `${position}`;
@@ -1024,11 +1030,6 @@ class MobileOutlineWriter {
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
                 this.elements.isHeading.checked = false;
-                this.updateHierarchyPaths();
-                this.renderOutline();
-                this.updateCharCount();
-                this.updateButtonStates();
-                this.updateBreadcrumb();
             }
             this.loadBackups();
         } catch (e) {
