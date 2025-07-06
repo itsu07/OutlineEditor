@@ -75,7 +75,7 @@
     </main>
 
     <!-- ボトムツールバー -->
-    <div class="bottom-toolbar">
+    <div id="bottom-toolbar" class="bottom-toolbar">
         <button id="add-item-mobile" class="toolbar-btn primary">
             <span class="btn-icon">➕</span>
             <span class="btn-text">項目追加</span>
@@ -91,6 +91,10 @@
         <button id="delete-mobile" class="toolbar-btn danger">
             <span class="btn-icon">🗑️</span>
             <span class="btn-text">削除</span>
+        </button>
+        <button id="hide-toolbar-mobile" class="toolbar-btn secondary">
+            <span class="btn-icon">👁️</span>
+            <span class="btn-text">非表示</span>
         </button>
     </div>
 
@@ -112,6 +116,14 @@
                     <button id="redo-mobile" class="menu-item">
                         <span class="menu-icon">↷</span>
                         やり直し
+                    </button>
+                </div>
+                
+                <div class="menu-section">
+                    <h4>表示</h4>
+                    <button id="show-toolbar-mobile" class="menu-item">
+                        <span class="menu-icon">👁️</span>
+                        ツールバー表示
                     </button>
                 </div>
                 
@@ -159,6 +171,10 @@
                 
                 <div class="menu-section">
                     <h4>エクスポート</h4>
+                    <button id="export-json-mobile" class="menu-item">
+                        <span class="menu-icon">🗂️</span>
+                        JSON出力
+                    </button>
                     <button id="export-md-mobile" class="menu-item">
                         <span class="menu-icon">📤</span>
                         Markdown出力

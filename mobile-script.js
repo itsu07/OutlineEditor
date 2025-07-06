@@ -13,6 +13,7 @@ class MobileOutlineWriter {
         this.hierarchyUpdateNeeded = false;
         this.sidebarOpen = false;
         this.selectedItems = new Set();
+        this.toolbarVisible = true;
         
         // Google Drive integration
         this.driveConfig = {
@@ -69,10 +70,13 @@ class MobileOutlineWriter {
             totalCharCount: document.getElementById('total-char-count-mobile'),
             
             // Toolbar
+            bottomToolbar: document.getElementById('bottom-toolbar'),
             addItemBtn: document.getElementById('add-item-mobile'),
             indentBtn: document.getElementById('indent-mobile'),
             outdentBtn: document.getElementById('outdent-mobile'),
             deleteBtn: document.getElementById('delete-mobile'),
+            hideToolbarBtn: document.getElementById('hide-toolbar-mobile'),
+            showToolbarBtn: document.getElementById('show-toolbar-mobile'),
             
             // Menu
             actionMenu: document.getElementById('action-menu'),
@@ -93,6 +97,7 @@ class MobileOutlineWriter {
             loadFileInput: document.getElementById('load-file-mobile'),
             loadMdBtn: document.getElementById('load-md-mobile'),
             loadMarkdownInput: document.getElementById('load-markdown-mobile'),
+            exportJsonBtn: document.getElementById('export-json-mobile'),
             exportMdBtn: document.getElementById('export-md-mobile'),
             exportTextBtn: document.getElementById('export-text-mobile'),
             
@@ -172,6 +177,8 @@ class MobileOutlineWriter {
         this.elements.indentBtn.addEventListener('click', () => this.indentItem());
         this.elements.outdentBtn.addEventListener('click', () => this.outdentItem());
         this.elements.deleteBtn.addEventListener('click', () => this.deleteCurrentItem());
+        this.elements.hideToolbarBtn.addEventListener('click', () => this.hideToolbar());
+        this.elements.showToolbarBtn.addEventListener('click', () => this.showToolbar());
         
         // Menu events
         this.elements.closeMenu.addEventListener('click', () => this.closeMenu());
@@ -185,6 +192,7 @@ class MobileOutlineWriter {
         this.elements.loadFileInput.addEventListener('change', (e) => this.loadFromFile(e));
         this.elements.loadMdBtn.addEventListener('click', () => this.loadMarkdownFromDialog());
         this.elements.loadMarkdownInput.addEventListener('change', (e) => this.loadFromMarkdownFile(e));
+        this.elements.exportJsonBtn.addEventListener('click', () => this.exportAsJSON());
         this.elements.exportMdBtn.addEventListener('click', () => this.exportAsMarkdown());
         this.elements.exportTextBtn.addEventListener('click', () => this.exportAsText());
         
@@ -751,6 +759,41 @@ class MobileOutlineWriter {
         return total;
     }
 
+    // ツールバー表示/非表示機能
+    hideToolbar() {
+        this.toolbarVisible = false;
+        this.elements.bottomToolbar.style.transform = 'translateY(100%)';
+        this.elements.bottomToolbar.style.transition = 'transform 0.3s ease';
+        
+        // メニューのツールバー表示ボタンを有効化
+        this.elements.showToolbarBtn.style.display = 'block';
+        
+        this.closeMenu();
+        localStorage.setItem('toolbar-visible', 'false');
+    }
+
+    showToolbar() {
+        this.toolbarVisible = true;
+        this.elements.bottomToolbar.style.transform = 'translateY(0)';
+        this.elements.bottomToolbar.style.transition = 'transform 0.3s ease';
+        
+        // メニューのツールバー表示ボタンを無効化
+        this.elements.showToolbarBtn.style.display = 'none';
+        
+        this.closeMenu();
+        localStorage.setItem('toolbar-visible', 'true');
+    }
+
+    // ツールバー状態の初期化
+    initializeToolbarState() {
+        const saved = localStorage.getItem('toolbar-visible');
+        if (saved === 'false') {
+            this.hideToolbar();
+        } else {
+            this.showToolbar();
+        }
+    }
+
     countChars(items, callback) {
         items.forEach(item => {
             callback(item.content.length);
@@ -988,7 +1031,21 @@ class MobileOutlineWriter {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const data = JSON.parse(e.target.result);
+                const loadedData = JSON.parse(e.target.result);
+                let data;
+                
+                if (loadedData.data) {
+                    data = loadedData.data;
+                } else if (loadedData.items) {
+                    data = loadedData;
+                } else {
+                    throw new Error('Invalid data structure');
+                }
+                
+                if (!data.items || !Array.isArray(data.items)) {
+                    throw new Error('Invalid items structure');
+                }
+                
                 this.data = data;
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
@@ -1001,7 +1058,8 @@ class MobileOutlineWriter {
                 this.updateBreadcrumb();
                 this.showToast('ファイルを読み込みました');
             } catch (error) {
-                this.showToast('ファイルの読み込みに失敗しました');
+                console.error('File load error:', error);
+                this.showToast('ファイルの読み込みに失敗しました: ' + error.message);
             }
         };
         reader.readAsText(file);
@@ -1049,6 +1107,21 @@ class MobileOutlineWriter {
     exportAsText() {
         const text = this.generateTextExport(this.data.items, 0);
         this.downloadFileWithName(text, 'text/plain', 'outline.txt');
+        this.closeMenu();
+    }
+
+    createExportData() {
+        return {
+            data: this.data,
+            timestamp: new Date().toLocaleString('ja-JP'),
+            version: '2.2'
+        };
+    }
+
+    exportAsJSON() {
+        const jsonData = this.createExportData();
+        const jsonString = JSON.stringify(jsonData, null, 2);
+        this.downloadFileWithName(jsonString, 'application/json', 'outline.json');
         this.closeMenu();
     }
 
@@ -1893,11 +1966,7 @@ class MobileOutlineWriter {
 
         try {
             // 初期データを作成
-            const initialData = {
-                data: this.data,
-                timestamp: new Date().toLocaleString('ja-JP'),
-                version: '2.1'
-            };
+            const initialData = this.createExportData();
 
             const fileMetadata = {
                 name: fileName,
@@ -1993,11 +2062,7 @@ class MobileOutlineWriter {
         this.showSyncProgress();
 
         try {
-            const dataToUpload = {
-                data: this.data,
-                timestamp: new Date().toLocaleString('ja-JP'),
-                version: '2.1'
-            };
+            const dataToUpload = this.createExportData();
 
             const response = await gapi.client.request({
                 path: `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.fileId}`,
