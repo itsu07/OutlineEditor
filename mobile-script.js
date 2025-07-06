@@ -404,7 +404,9 @@ class MobileOutlineWriter {
         }
 
         const results = [];
-        this.searchItems(this.data.items, query.toLowerCase(), results);
+        if (this.data && this.data.items) {
+            this.searchItems(this.data.items, query.toLowerCase(), results);
+        }
         this.displaySearchResults(results);
     }
 
@@ -619,17 +621,23 @@ class MobileOutlineWriter {
         const parent = this.findItemParent(this.currentItem.id);
         this.elements.outdentBtn.disabled = parent === null;
         
-        const siblings = parent ? parent.children : this.data.items;
+        const siblings = parent ? parent.children : (this.data && this.data.items ? this.data.items : []);
         const currentIndex = siblings.indexOf(this.currentItem);
         this.elements.indentBtn.disabled = currentIndex === 0;
     }
 
     renderOutline() {
+        if (!this.data || !this.data.items) {
+            return;
+        }
         this.elements.outlineTree.innerHTML = '';
         this.renderItems(this.data.items, this.elements.outlineTree);
     }
 
     renderItems(items, container) {
+        if (!items || !Array.isArray(items)) {
+            return;
+        }
         items.forEach(item => {
             const itemEl = this.createItemElement(item);
             container.appendChild(itemEl);
@@ -771,9 +779,11 @@ class MobileOutlineWriter {
 
     getTotalCharCount() {
         let total = 0;
-        this.countChars(this.data.items, (count) => {
-            total += count;
-        });
+        if (this.data && this.data.items) {
+            this.countChars(this.data.items, (count) => {
+                total += count;
+            });
+        }
         return total;
     }
 
@@ -1558,7 +1568,7 @@ class MobileOutlineWriter {
     }
 
     createAutoBackup() {
-        if (this.data.items.length === 0) return;
+        if (!this.data || !this.data.items || this.data.items.length === 0) return;
         
         const timestamp = new Date().toLocaleString('ja-JP');
         const backup = {
