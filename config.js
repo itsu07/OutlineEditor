@@ -14,14 +14,26 @@
 
 const GOOGLE_CONFIG = {
     // OAuth 2.0 クライアントID
-    // 承認済みJavaScriptの生成元にドメインを追加済みであることを確認
+    // 開発環境用: localhost:8000とfile://プロトコルで動作可能
     CLIENT_ID: '752134953637-kfh5qnplpsb4etd2dui1fgq4snlgkvbp.apps.googleusercontent.com',
     
     // Google Drive APIのスコープ（アプリが作成したファイルのみアクセス + ユーザー情報）
     SCOPES: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
     
     // Discovery URL for the Drive API
-    DISCOVERY_URL: 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'
+    DISCOVERY_URL: 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
+    
+    // 開発環境用の設定
+    DEV_MODE: true,
+    
+    // 承認済みドメインの設定例
+    AUTHORIZED_DOMAINS: [
+        'http://localhost:8000',
+        'http://localhost:3000',
+        'http://127.0.0.1:8000',
+        'http://127.0.0.1:3000',
+        'file://'
+    ]
 };
 
 // 設定確認用関数
@@ -36,21 +48,36 @@ function validateGoogleConfig() {
 
 // 設定手順の説明
 const SETUP_INSTRUCTIONS = `
-Google Drive API設定手順（簡略版）:
+Google Drive API設定手順（開発環境用）:
+
+⚠️ 重要: OAuth 2.0エラーの修正方法
 
 1. Google Cloud Console (https://console.cloud.google.com/) にアクセス
-2. 新しいプロジェクトを作成または既存プロジェクトを選択
-3. 「APIとサービス」→「ライブラリ」でGoogle Drive APIを有効化
-4. 「APIとサービス」→「認証情報」でOAuth 2.0 クライアントIDを作成
-   - アプリケーションの種類: ウェブアプリケーション
-   - 承認済みのJavaScriptの生成元: あなたのドメイン（例: https://yoursite.com）
-5. 取得したクライアントIDを config.js の CLIENT_ID に設定
+2. 「APIとサービス」→「認証情報」を選択
+3. 既存のOAuth 2.0 クライアントIDを編集
+4. 「承認済みのJavaScriptの生成元」に以下を追加:
+   - http://localhost:8000
+   - http://localhost:3000
+   - http://127.0.0.1:8000
+   - http://127.0.0.1:3000
+   - file://
 
-セキュリティ設定:
-- OAuth 2.0クライアントIDに承認済みドメインのみ追加
-- スコープは 'drive.file' に制限（アプリが作成したファイルのみアクセス可能）
+5. 「承認済みのリダイレクト URI」に以下を追加:
+   - http://localhost:8000
+   - http://localhost:3000
+   - http://127.0.0.1:8000
+   - http://127.0.0.1:3000
 
-注意: APIキーは不要です。OAuth 2.0のみで十分です。
+6. 変更を保存
+
+開発環境での起動方法:
+- python3 -m http.server 8000 でローカルサーバーを起動
+- http://localhost:8000 でアクセス
+
+注意事項:
+- file:// プロトコルでは一部制限あり
+- 開発時はローカルサーバー推奨
+- 本番デプロイ時は実際のドメインを設定
 `;
 
 if (typeof module !== 'undefined' && module.exports) {
