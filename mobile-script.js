@@ -40,12 +40,25 @@ class MobileOutlineWriter {
         this.startAutoBackup();
         this.setupPWA();
         
-        // Google API初期化は少し遅延させる
+        // Google API初期化は少し遅延させる（リトライ機能付き）
+        // DOMが完全に読み込まれてから初期化を開始
+        if (document.readyState === 'complete') {
+            this.scheduleGoogleAPIInitialization();
+        } else {
+            window.addEventListener('load', () => {
+                this.scheduleGoogleAPIInitialization();
+            });
+        }
+    }
+    
+    scheduleGoogleAPIInitialization() {
+        console.log('Google API初期化をスケジュール中... readyState:', document.readyState);
         setTimeout(() => {
             console.log('Google API初期化を開始...');
-            this.initializeGoogleAPI();
+            this.initializeGoogleAPIWithRetry();
         }, 1000);
     }
+
 
     initializeElements() {
         this.elements = {
@@ -115,6 +128,7 @@ class MobileOutlineWriter {
             createDriveFile: document.getElementById('create-drive-file'),
             autoSync: document.getElementById('auto-sync'),
             saveDriveConfig: document.getElementById('save-drive-config'),
+            diagnoseGoogleApi: document.getElementById('diagnose-google-api'),
             
             // Sync dialog
             syncDialog: document.getElementById('sync-dialog'),
@@ -218,6 +232,10 @@ class MobileOutlineWriter {
         this.elements.saveDriveConfig.addEventListener('click', () => this.saveDriveConfig());
         this.elements.uploadToDrive.addEventListener('click', () => this.uploadToDrive());
         this.elements.downloadFromDrive.addEventListener('click', () => this.downloadFromDrive());
+        this.elements.diagnoseGoogleApi.addEventListener('click', () => {
+            const status = this.diagnoseGoogleAPIStatus();
+            this.showToast('診断結果をコンソールで確認してください');
+        });
         
         // Drive dialog backdrop events
         this.elements.driveSetupDialog.querySelector('.dialog-backdrop').addEventListener('click', () => this.closeDriveSetupDialog());
@@ -1567,9 +1585,21 @@ class MobileOutlineWriter {
         try {
             // 設定の検証
             console.log('設定の検証中...');
-            if (typeof GOOGLE_CONFIG === 'undefined' || !validateGoogleConfig()) {
+            console.log('GOOGLE_CONFIG:', typeof GOOGLE_CONFIG !== 'undefined' ? 'defined' : 'undefined');
+            
+            if (typeof GOOGLE_CONFIG === 'undefined') {
+                console.error('GOOGLE_CONFIG が定義されていません。config.jsが読み込まれているか確認してください。');
+                this.showToast('設定ファイルが見つかりません');
+                return;
+            }
+            
+            console.log('Client ID:', GOOGLE_CONFIG.CLIENT_ID ? '設定済み' : '未設定');
+            console.log('Scopes:', GOOGLE_CONFIG.SCOPES ? '設定済み' : '未設定');
+            
+            if (!validateGoogleConfig()) {
                 console.warn('Google Drive機能は利用できません。config.jsを設定してください。');
                 console.log(SETUP_INSTRUCTIONS);
+                this.showToast('Google Drive設定が無効です');
                 return;
             }
             console.log('設定検証完了');
@@ -1581,8 +1611,11 @@ class MobileOutlineWriter {
 
             // Google Drive API クライアントを初期化
             console.log('gapi.client初期化中...');
-            await new Promise((resolve) => {
-                gapi.load('client', resolve);
+            await new Promise((resolve, reject) => {
+                gapi.load('client', {
+                    callback: resolve,
+                    onerror: reject
+                });
             });
             console.log('gapi.client初期化完了');
 
@@ -1633,6 +1666,50 @@ class MobileOutlineWriter {
             console.error('Google API初期化エラー:', error);
             this.gapiInitialized = false;
             this.showToast(`Google Drive機能の初期化に失敗しました: ${error.message}`);
+            
+            // 初期化失敗時の詳細情報を表示
+            console.log('初期化失敗時の詳細情報:');
+            console.log('- gapiInitialized:', this.gapiInitialized);
+            console.log('- tokenClient:', this.tokenClient);
+            console.log('- typeof gapi:', typeof gapi);
+            console.log('- typeof google:', typeof google);
+            console.log('- google.accounts:', typeof google !== 'undefined' ? typeof google.accounts : 'undefined');
+        }
+    }
+
+    async initializeGoogleAPIWithRetry(maxRetries = 3, retryDelay = 2000) {
+        let attempt = 1;
+        
+        while (attempt <= maxRetries) {
+            try {
+                console.log(`Google API 初期化試行 ${attempt}/${maxRetries}`);
+                await this.initializeGoogleAPI();
+                
+                // 成功した場合は終了
+                if (this.gapiInitialized) {
+                    console.log('Google API 初期化が成功しました');
+                    return;
+                }
+                
+                // gapiInitialized が false の場合は失敗と判断
+                throw new Error('初期化は完了したが、gapiInitialized が false です');
+                
+            } catch (error) {
+                console.error(`Google API 初期化試行 ${attempt} 失敗:`, error.message);
+                
+                if (attempt === maxRetries) {
+                    console.error('Google API 初期化の最大試行回数に達しました。Google Drive機能は利用できません。');
+                    this.showToast('Google Drive機能の初期化に失敗しました');
+                    return;
+                }
+                
+                console.log(`${retryDelay}ms 後に再試行します...`);
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+                
+                // 次の試行では待機時間を増加
+                retryDelay = Math.min(retryDelay * 1.5, 10000);
+                attempt++;
+            }
         }
     }
 
@@ -1641,7 +1718,26 @@ class MobileOutlineWriter {
         let attempts = 0;
         const maxAttempts = 100; // 10秒まで待機
         
+        console.log('Google API ライブラリの読み込み状況を確認中...');
+        
         while (attempts < maxAttempts) {
+            const gapiStatus = typeof gapi !== 'undefined' ? 'loaded' : 'not loaded';
+            const googleStatus = typeof google !== 'undefined' ? 'loaded' : 'not loaded';
+            const accountsStatus = typeof google !== 'undefined' && google.accounts ? 'loaded' : 'not loaded';
+            const oauth2Status = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 ? 'loaded' : 'not loaded';
+            const tokenClientStatus = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && 
+                                      typeof google.accounts.oauth2.initTokenClient === 'function' ? 'loaded' : 'not loaded';
+            
+            // 詳細なステータスを5回ごとに表示
+            if (attempts % 5 === 0) {
+                console.log(`Google API 読み込み状況 (${attempts + 1}/${maxAttempts}):`);
+                console.log(`  - gapi: ${gapiStatus}`);
+                console.log(`  - google: ${googleStatus}`);
+                console.log(`  - google.accounts: ${accountsStatus}`);
+                console.log(`  - google.accounts.oauth2: ${oauth2Status}`);
+                console.log(`  - initTokenClient: ${tokenClientStatus}`);
+            }
+            
             if (typeof gapi !== 'undefined' && 
                 typeof google !== 'undefined' && 
                 google.accounts && 
@@ -1650,10 +1746,11 @@ class MobileOutlineWriter {
                 console.log('Google API libraries loaded successfully');
                 return;
             }
-            console.log(`Google APIs loading... attempt ${attempts + 1}/${maxAttempts}`);
+            
             await new Promise(resolve => setTimeout(resolve, 100));
             attempts++;
         }
+        
         throw new Error('Google API libraries failed to load after 10 seconds');
     }
 
@@ -1712,7 +1809,7 @@ class MobileOutlineWriter {
             this.tokenClient.requestAccessToken();
         } catch (error) {
             console.error('Google ログインエラー:', error);
-            this.showToast('Googleログインに失敗しました');
+            this.showToast(`Googleログインに失敗しました: ${error.message}`);
         }
     }
 
