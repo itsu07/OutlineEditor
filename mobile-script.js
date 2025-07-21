@@ -85,6 +85,8 @@ class MobileOutlineWriter {
             // Toolbar
             bottomToolbar: document.getElementById('bottom-toolbar'),
             addItemBtn: document.getElementById('add-item-mobile'),
+            moveUpBtn: document.getElementById('move-up-mobile'),
+            moveDownBtn: document.getElementById('move-down-mobile'),
             indentBtn: document.getElementById('indent-mobile'),
             outdentBtn: document.getElementById('outdent-mobile'),
             deleteBtn: document.getElementById('delete-mobile'),
@@ -188,6 +190,8 @@ class MobileOutlineWriter {
         
         // Toolbar events
         this.elements.addItemBtn.addEventListener('click', () => this.addItemAfterCurrent());
+        this.elements.moveUpBtn.addEventListener('click', () => this.moveUp());
+        this.elements.moveDownBtn.addEventListener('click', () => this.moveDown());
         this.elements.indentBtn.addEventListener('click', () => this.indentItem());
         this.elements.outdentBtn.addEventListener('click', () => this.outdentItem());
         this.elements.deleteBtn.addEventListener('click', () => this.deleteCurrentItem());
@@ -610,6 +614,8 @@ class MobileOutlineWriter {
 
     updateButtonStates() {
         if (!this.currentItem) {
+            this.elements.moveUpBtn.disabled = true;
+            this.elements.moveDownBtn.disabled = true;
             this.elements.indentBtn.disabled = true;
             this.elements.outdentBtn.disabled = true;
             this.elements.deleteBtn.disabled = true;
@@ -624,6 +630,10 @@ class MobileOutlineWriter {
         const siblings = parent ? parent.children : (this.data && this.data.items ? this.data.items : []);
         const currentIndex = siblings.indexOf(this.currentItem);
         this.elements.indentBtn.disabled = currentIndex === 0;
+        
+        // Update move button states
+        this.elements.moveUpBtn.disabled = currentIndex === 0;
+        this.elements.moveDownBtn.disabled = currentIndex === siblings.length - 1;
     }
 
     renderOutline() {
@@ -931,6 +941,46 @@ class MobileOutlineWriter {
         this.updateBreadcrumb();
         this.saveToHistory();
         this.showToast('項目を削除しました');
+    }
+
+    moveUp() {
+        if (!this.currentItem) return;
+        
+        const parent = this.findItemParent(this.currentItem.id);
+        const siblings = parent ? parent.children : this.data.items;
+        const currentIndex = siblings.indexOf(this.currentItem);
+        
+        if (currentIndex > 0) {
+            siblings[currentIndex] = siblings[currentIndex - 1];
+            siblings[currentIndex - 1] = this.currentItem;
+            
+            this.updateHierarchyPaths();
+            this.renderOutline();
+            this.selectItem(this.currentItem.id);
+            this.updateButtonStates();
+            this.saveToHistory();
+            this.showToast('項目を上に移動しました');
+        }
+    }
+
+    moveDown() {
+        if (!this.currentItem) return;
+        
+        const parent = this.findItemParent(this.currentItem.id);
+        const siblings = parent ? parent.children : this.data.items;
+        const currentIndex = siblings.indexOf(this.currentItem);
+        
+        if (currentIndex < siblings.length - 1) {
+            siblings[currentIndex] = siblings[currentIndex + 1];
+            siblings[currentIndex + 1] = this.currentItem;
+            
+            this.updateHierarchyPaths();
+            this.renderOutline();
+            this.selectItem(this.currentItem.id);
+            this.updateButtonStates();
+            this.saveToHistory();
+            this.showToast('項目を下に移動しました');
+        }
     }
 
     // Include all hierarchy management methods from main script
