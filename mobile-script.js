@@ -12,8 +12,10 @@ class MobileOutlineWriter {
         this.maxBackups = 10;
         this.hierarchyUpdateNeeded = false;
         this.sidebarOpen = false;
-        this.selectedItems = new Set();
         this.toolbarVisible = true;
+        this.autoSaveTimer = null;
+        this.historyTimer = null;
+        this.toastTimer = null;
         
         // Google Drive integration
         this.driveConfig = {
@@ -28,14 +30,19 @@ class MobileOutlineWriter {
         // Google API状態
         this.tokenClient = null;
         this.accessToken = null;
+        this.tokenExpiresAt = null;
+        this.pendingAutoSync = false;
         this.gapiInitialized = false;
         
         this.initializeElements();
         this.bindEvents();
+        this.initializeToolbarState();
         this.loadConfig();
         this.loadData();
         this.updateHierarchyPaths();
         this.renderOutline();
+        this.updateCharCount();
+        this.updateButtonStates();
         this.saveToHistory();
         this.startAutoBackup();
         this.setupPWA();
@@ -157,16 +164,6 @@ class MobileOutlineWriter {
         this.sidebarOverlay = document.createElement('div');
         this.sidebarOverlay.className = 'sidebar-overlay';
         document.body.appendChild(this.sidebarOverlay);
-        
-        // Debug: Check if critical elements exist
-        console.log('Drive setup dialog element:', this.elements.driveSetupDialog);
-        console.log('Drive setup button element:', this.elements.driveSetupBtn);
-        if (!this.elements.driveSetupDialog) {
-            console.error('Critical: drive-setup-dialog element not found in DOM');
-        }
-        if (!this.elements.driveSetupBtn) {
-            console.error('Critical: drive-setup-mobile element not found in DOM');
-        }
     }
 
     bindEvents() {
@@ -216,20 +213,12 @@ class MobileOutlineWriter {
         
         // Drive events
         if (this.elements.driveSetupBtn) {
-            this.elements.driveSetupBtn.addEventListener('click', () => {
-                console.log('Drive setup button clicked');
-                this.openDriveSetupDialog();
-            });
-        } else {
-            console.error('Cannot bind event: driveSetupBtn element not found');
+            this.elements.driveSetupBtn.addEventListener('click', () => this.openDriveSetupDialog());
         }
         this.elements.driveSyncBtn.addEventListener('click', () => this.openSyncDialog());
         this.elements.closeDriveDialog.addEventListener('click', () => this.closeDriveSetupDialog());
         this.elements.closeSyncDialog.addEventListener('click', () => this.closeSyncDialog());
-        this.elements.googleSignin.addEventListener('click', () => {
-            console.log('Google ログインボタンがクリックされました');
-            this.signInToGoogle();
-        });
+        this.elements.googleSignin.addEventListener('click', () => this.signInToGoogle());
         this.elements.googleSignout.addEventListener('click', () => this.signOutFromGoogle());
         this.elements.selectDriveFile.addEventListener('click', () => this.selectExistingFile());
         this.elements.createDriveFile.addEventListener('click', () => this.createNewFile());
@@ -238,7 +227,8 @@ class MobileOutlineWriter {
         this.elements.downloadFromDrive.addEventListener('click', () => this.downloadFromDrive());
         this.elements.diagnoseGoogleApi.addEventListener('click', () => {
             const status = this.diagnoseGoogleAPIStatus();
-            this.showToast('診断結果をコンソールで確認してください');
+            const ok = (v) => v ? 'OK' : 'NG';
+            this.showToast(`GIS:${ok(status.gisLoaded)} 初期化:${ok(status.gapiInitialized)} ログイン:${ok(status.connected)}`);
         });
         
         // Drive dialog backdrop events
@@ -315,8 +305,14 @@ class MobileOutlineWriter {
         }
         // Close panels with Escape
         else if (e.key === 'Escape') {
-            if (!this.elements.searchPanel.classList.contains('hidden')) {
+            if (this.isGenericDialogOpen()) {
+                this.cancelGenericDialog();
+            } else if (!this.elements.searchPanel.classList.contains('hidden')) {
                 this.closeSearch();
+            } else if (!this.elements.syncDialog.classList.contains('hidden')) {
+                this.closeSyncDialog();
+            } else if (!this.elements.driveSetupDialog.classList.contains('hidden')) {
+                this.closeDriveSetupDialog();
             } else if (!this.elements.actionMenu.classList.contains('hidden')) {
                 this.closeMenu();
             } else if (this.sidebarOpen && window.innerWidth < 768) {
@@ -437,7 +433,7 @@ class MobileOutlineWriter {
 
         const html = results.map(item => `
             <div class="search-result-item" data-id="${item.id}">
-                <div class="search-result-title">${this.escapeHtml(item.title)}</div>
+                <div class="search-result-title">${this.escapeHtml(item.title || '無題')}</div>
                 <div class="search-result-content">${this.escapeHtml(item.content.substring(0, 100))}${item.content.length > 100 ? '...' : ''}</div>
             </div>
         `).join('');
@@ -465,10 +461,167 @@ class MobileOutlineWriter {
     showToast(message, duration = 3000) {
         this.elements.toastMessage.textContent = message;
         this.elements.toast.classList.remove('hidden');
-        
-        setTimeout(() => {
+
+        clearTimeout(this.toastTimer);
+        this.toastTimer = setTimeout(() => {
             this.elements.toast.classList.add('hidden');
         }, duration);
+    }
+
+    // ===== Generic in-app dialogs (replace native prompt/confirm) =====
+    ensureGenericDialog() {
+        if (this.genericDialogEl) return this.genericDialogEl;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'generic-dialog';
+        overlay.className = 'drive-dialog generic-dialog hidden';
+        overlay.innerHTML = `
+            <div class="dialog-backdrop"></div>
+            <div class="dialog-panel">
+                <div class="dialog-header">
+                    <h3 id="generic-dialog-title"></h3>
+                </div>
+                <div class="dialog-content">
+                    <p id="generic-dialog-message"></p>
+                    <input type="text" id="generic-dialog-input" class="hidden">
+                    <div id="generic-dialog-choices" class="generic-dialog-choices hidden"></div>
+                </div>
+                <div class="dialog-actions" id="generic-dialog-actions">
+                    <button id="generic-dialog-cancel" class="btn secondary">キャンセル</button>
+                    <button id="generic-dialog-ok" class="btn primary">OK</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const backdrop = overlay.querySelector('.dialog-backdrop');
+        const okBtn = overlay.querySelector('#generic-dialog-ok');
+        const cancelBtn = overlay.querySelector('#generic-dialog-cancel');
+        const input = overlay.querySelector('#generic-dialog-input');
+
+        backdrop.addEventListener('click', () => this.resolveGenericDialog(this.genericDialogCancelValue));
+        cancelBtn.addEventListener('click', () => this.resolveGenericDialog(this.genericDialogCancelValue));
+        okBtn.addEventListener('click', () => this.resolveGenericDialog(this.readGenericDialogOkValue()));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.resolveGenericDialog(this.readGenericDialogOkValue());
+            }
+        });
+
+        this.genericDialogEl = overlay;
+        return overlay;
+    }
+
+    readGenericDialogOkValue() {
+        if (this.genericDialogMode === 'prompt') {
+            const input = this.genericDialogEl.querySelector('#generic-dialog-input');
+            return input.value;
+        }
+        return true;
+    }
+
+    isGenericDialogOpen() {
+        return !!(this.genericDialogEl && !this.genericDialogEl.classList.contains('hidden'));
+    }
+
+    cancelGenericDialog() {
+        if (this.isGenericDialogOpen()) {
+            this.resolveGenericDialog(this.genericDialogCancelValue);
+        }
+    }
+
+    resolveGenericDialog(value) {
+        if (!this.genericDialogEl || this.genericDialogEl.classList.contains('hidden')) return;
+        this.genericDialogEl.classList.add('hidden');
+        const resolve = this.genericDialogResolve;
+        this.genericDialogResolve = null;
+        this.genericDialogMode = null;
+        if (resolve) resolve(value);
+    }
+
+    openGenericDialog({ title = '', message = '', mode = 'confirm', okLabel = 'OK', cancelLabel = 'キャンセル', defaultValue = '', choices = [], cancelValue = null }) {
+        const overlay = this.ensureGenericDialog();
+        const titleEl = overlay.querySelector('#generic-dialog-title');
+        const messageEl = overlay.querySelector('#generic-dialog-message');
+        const input = overlay.querySelector('#generic-dialog-input');
+        const choicesEl = overlay.querySelector('#generic-dialog-choices');
+        const okBtn = overlay.querySelector('#generic-dialog-ok');
+        const cancelBtn = overlay.querySelector('#generic-dialog-cancel');
+
+        // Cancel any dialog currently open before opening a new one
+        this.cancelGenericDialog();
+
+        this.genericDialogMode = mode;
+        this.genericDialogCancelValue = cancelValue;
+
+        titleEl.textContent = title;
+        titleEl.closest('.dialog-header').classList.toggle('hidden', !title);
+        messageEl.textContent = message;
+        messageEl.classList.toggle('hidden', !message);
+
+        input.classList.toggle('hidden', mode !== 'prompt');
+        choicesEl.classList.toggle('hidden', mode !== 'choice');
+        okBtn.classList.toggle('hidden', mode === 'choice');
+        cancelBtn.textContent = cancelLabel;
+        okBtn.textContent = okLabel;
+
+        choicesEl.innerHTML = '';
+        if (mode === 'choice') {
+            choices.forEach((label, index) => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'generic-dialog-choice';
+                item.textContent = label;
+                item.addEventListener('click', () => this.resolveGenericDialog(index));
+                choicesEl.appendChild(item);
+            });
+        }
+
+        overlay.classList.remove('hidden');
+
+        if (mode === 'prompt') {
+            input.value = defaultValue || '';
+            setTimeout(() => {
+                input.focus();
+                input.select();
+            }, 0);
+        }
+
+        return new Promise((resolve) => {
+            this.genericDialogResolve = resolve;
+        });
+    }
+
+    async showConfirmDialog(message, { okLabel = 'OK', cancelLabel = 'キャンセル' } = {}) {
+        const result = await this.openGenericDialog({
+            message,
+            mode: 'confirm',
+            okLabel,
+            cancelLabel,
+            cancelValue: false
+        });
+        return result === true;
+    }
+
+    async showPromptDialog(message, defaultValue = '') {
+        const result = await this.openGenericDialog({
+            message,
+            mode: 'prompt',
+            defaultValue,
+            cancelValue: null
+        });
+        return result;
+    }
+
+    async showChoiceDialog(title, choices) {
+        const result = await this.openGenericDialog({
+            title,
+            mode: 'choice',
+            choices,
+            cancelValue: null
+        });
+        return result;
     }
 
     // Update breadcrumb
@@ -486,8 +639,8 @@ class MobileOutlineWriter {
             item = item.parentId ? this.findItemById(item.parentId) : null;
         }
         
-        const breadcrumbHtml = path.map(item => 
-            `<span class="breadcrumb-item">${this.escapeHtml(item.title)}</span>`
+        const breadcrumbHtml = path.map(item =>
+            `<span class="breadcrumb-item">${this.escapeHtml(item.title || '無題')}</span>`
         ).join('');
         
         this.elements.breadcrumb.innerHTML = `<span class="breadcrumb-item">ホーム</span>${breadcrumbHtml}`;
@@ -530,6 +683,7 @@ class MobileOutlineWriter {
         this.elements.currentTitle.focus();
         this.elements.currentTitle.select();
         this.saveToHistory();
+        this.scheduleAutoSave();
         this.showToast('項目を追加しました');
     }
 
@@ -582,34 +736,40 @@ class MobileOutlineWriter {
     updateCurrentItem() {
         if (!this.currentItem) return;
 
-        this.currentItem.title = this.elements.currentTitle.value || '無題';
+        this.currentItem.title = this.elements.currentTitle.value;
         this.currentItem.content = this.elements.currentContent.value;
         this.currentItem.isHeading = this.elements.isHeading.checked;
-        
-        this.renderOutline();
-        this.updateActiveState();
+
+        this.updateItemElementLight(this.currentItem);
         this.updateBreadcrumb();
-        this.saveToHistory();
+        this.scheduleHistorySave();
+        this.scheduleAutoSave();
+    }
+
+    // サイドバーの該当項目のみを軽量に更新（全体再描画を避ける）
+    updateItemElementLight(item) {
+        const contentEl = document.querySelector(`.outline-item-content-mobile[data-id="${item.id}"]`);
+        if (!contentEl) return;
+
+        const titleEl = contentEl.querySelector('.outline-title-mobile');
+        if (titleEl) {
+            titleEl.textContent = item.title || '無題';
+            titleEl.classList.toggle('heading', !!item.isHeading);
+        }
+        contentEl.classList.toggle('heading', !!item.isHeading);
     }
 
     updateActiveState() {
         document.querySelectorAll('.outline-item-content-mobile').forEach(el => {
             el.classList.remove('active', 'selected');
         });
-        
+
         if (this.currentItem) {
             const activeEl = document.querySelector(`[data-id="${this.currentItem.id}"]`);
             if (activeEl) {
                 activeEl.classList.add('active');
             }
         }
-        
-        this.selectedItems.forEach(itemId => {
-            const selectedEl = document.querySelector(`[data-id="${itemId}"]`);
-            if (selectedEl) {
-                selectedEl.classList.add('selected');
-            }
-        });
     }
 
     updateButtonStates() {
@@ -679,7 +839,7 @@ class MobileOutlineWriter {
         if (item.isHeading) {
             titleSpan.classList.add('heading');
         }
-        titleSpan.textContent = item.title;
+        titleSpan.textContent = item.title || '無題';
 
         contentDiv.appendChild(toggleBtn);
         contentDiv.appendChild(titleSpan);
@@ -738,13 +898,6 @@ class MobileOutlineWriter {
 
     showItemContextMenu(item, touch) {
         // Simple context menu for mobile - could be expanded
-        const actions = [
-            { label: '編集', action: () => this.selectItem(item.id) },
-            { label: '削除', action: () => this.deleteItem(item.id) },
-            { label: 'インデント', action: () => this.indentItemById(item.id) },
-            { label: 'アウトデント', action: () => this.outdentItemById(item.id) }
-        ];
-        
         // For now, just select the item on long press
         this.selectItem(item.id);
         this.showToast('長押しで選択しました');
@@ -756,6 +909,7 @@ class MobileOutlineWriter {
             item.expanded = !item.expanded;
             this.renderOutline();
             this.updateActiveState();
+            this.scheduleAutoSave();
         }
     }
 
@@ -776,6 +930,7 @@ class MobileOutlineWriter {
         });
         this.renderOutline();
         this.updateActiveState();
+        this.scheduleAutoSave();
     }
 
     updateCharCount() {
@@ -805,7 +960,11 @@ class MobileOutlineWriter {
         
         // メニューのツールバー表示ボタンを有効化
         this.elements.showToolbarBtn.style.display = 'block';
-        
+        const showToolbarSection = this.elements.showToolbarBtn.closest('.menu-section');
+        if (showToolbarSection) {
+            showToolbarSection.style.display = '';
+        }
+
         this.closeMenu();
         localStorage.setItem('toolbar-visible', 'false');
     }
@@ -817,7 +976,11 @@ class MobileOutlineWriter {
         
         // メニューのツールバー表示ボタンを無効化
         this.elements.showToolbarBtn.style.display = 'none';
-        
+        const showToolbarSection = this.elements.showToolbarBtn.closest('.menu-section');
+        if (showToolbarSection) {
+            showToolbarSection.style.display = 'none';
+        }
+
         this.closeMenu();
         localStorage.setItem('toolbar-visible', 'true');
     }
@@ -872,6 +1035,7 @@ class MobileOutlineWriter {
         this.elements.currentTitle.focus();
         this.elements.currentTitle.select();
         this.saveToHistory();
+        this.scheduleAutoSave();
         this.showToast('項目を追加しました');
     }
 
@@ -893,6 +1057,7 @@ class MobileOutlineWriter {
             this.renderOutline();
             this.selectItem(this.currentItem.id);
             this.saveToHistory();
+            this.scheduleAutoSave();
             this.showToast('インデントしました');
         }
     }
@@ -915,13 +1080,15 @@ class MobileOutlineWriter {
         this.renderOutline();
         this.selectItem(this.currentItem.id);
         this.saveToHistory();
+        this.scheduleAutoSave();
         this.showToast('アウトデントしました');
     }
 
-    deleteCurrentItem() {
+    async deleteCurrentItem() {
         if (!this.currentItem) return;
-        
-        if (!confirm('この項目を削除しますか？')) return;
+
+        const ok = await this.showConfirmDialog('この項目を削除しますか？');
+        if (!ok) return;
         
         const parent = this.findItemParent(this.currentItem.id);
         const siblings = parent ? parent.children : this.data.items;
@@ -940,6 +1107,7 @@ class MobileOutlineWriter {
         this.updateButtonStates();
         this.updateBreadcrumb();
         this.saveToHistory();
+        this.scheduleAutoSave();
         this.showToast('項目を削除しました');
     }
 
@@ -959,6 +1127,7 @@ class MobileOutlineWriter {
             this.selectItem(this.currentItem.id);
             this.updateButtonStates();
             this.saveToHistory();
+            this.scheduleAutoSave();
             this.showToast('項目を上に移動しました');
         }
     }
@@ -979,6 +1148,7 @@ class MobileOutlineWriter {
             this.selectItem(this.currentItem.id);
             this.updateButtonStates();
             this.saveToHistory();
+            this.scheduleAutoSave();
             this.showToast('項目を下に移動しました');
         }
     }
@@ -1010,6 +1180,8 @@ class MobileOutlineWriter {
 
     // History management
     saveToHistory() {
+        clearTimeout(this.historyTimer);
+
         const currentState = JSON.parse(JSON.stringify(this.data));
         
         if (this.historyIndex < this.history.length - 1) {
@@ -1040,6 +1212,7 @@ class MobileOutlineWriter {
             this.updateButtonStates();
             this.updateBreadcrumb();
             this.updateUndoRedoButtons();
+            this.scheduleAutoSave();
             this.showToast('元に戻しました');
         }
     }
@@ -1057,6 +1230,7 @@ class MobileOutlineWriter {
             this.updateButtonStates();
             this.updateBreadcrumb();
             this.updateUndoRedoButtons();
+            this.scheduleAutoSave();
             this.showToast('やり直しました');
         }
     }
@@ -1070,6 +1244,14 @@ class MobileOutlineWriter {
         }
     }
 
+    // 入力が落ち着いてから履歴に保存する（キー入力ごとの記録を防ぐ）
+    scheduleHistorySave() {
+        clearTimeout(this.historyTimer);
+        this.historyTimer = setTimeout(() => {
+            this.saveToHistory();
+        }, 500);
+    }
+
     // Data management
     saveData() {
         try {
@@ -1081,11 +1263,24 @@ class MobileOutlineWriter {
         }
     }
 
+    // 変更が落ち着いてから静かにローカル保存する（トースト表示なし）
+    scheduleAutoSave() {
+        clearTimeout(this.autoSaveTimer);
+        this.autoSaveTimer = setTimeout(() => {
+            try {
+                localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
+                localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
+            } catch (e) {
+                console.error('自動保存に失敗しました:', e);
+            }
+        }, 800);
+    }
+
     loadData() {
         try {
             const saved = localStorage.getItem('outlinewriter-data');
             if (saved) {
-                this.data = JSON.parse(saved);
+                this.data = this.normalizeData(JSON.parse(saved));
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
@@ -1095,6 +1290,47 @@ class MobileOutlineWriter {
         } catch (e) {
             this.showToast('読み込みに失敗しました');
         }
+    }
+
+    // 読み込んだデータの構造を検証・修復する
+    normalizeData(data) {
+        if (!data || typeof data !== 'object') {
+            data = {};
+        }
+        if (!Array.isArray(data.items)) {
+            data.items = [];
+        }
+
+        let maxId = 0;
+        const normalizeItems = (items) => {
+            items.forEach(item => {
+                if (typeof item.id !== 'number' || isNaN(item.id)) {
+                    item.id = ++maxId;
+                }
+                if (item.id > maxId) {
+                    maxId = item.id;
+                }
+                if (typeof item.title !== 'string') {
+                    item.title = item.title != null ? String(item.title) : '';
+                }
+                if (typeof item.content !== 'string') {
+                    item.content = item.content != null ? String(item.content) : '';
+                }
+                item.isHeading = !!item.isHeading;
+                item.expanded = item.expanded !== false;
+                if (!Array.isArray(item.children)) {
+                    item.children = [];
+                }
+                normalizeItems(item.children);
+            });
+        };
+        normalizeItems(data.items);
+
+        if (typeof data.nextId !== 'number' || isNaN(data.nextId) || data.nextId <= maxId) {
+            data.nextId = maxId + 1;
+        }
+
+        return data;
     }
 
     // File operations
@@ -1125,7 +1361,7 @@ class MobileOutlineWriter {
                     throw new Error('Invalid items structure');
                 }
                 
-                this.data = data;
+                this.data = this.normalizeData(data);
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
@@ -1135,6 +1371,7 @@ class MobileOutlineWriter {
                 this.updateCharCount();
                 this.updateButtonStates();
                 this.updateBreadcrumb();
+                this.scheduleAutoSave();
                 this.showToast('ファイルを読み込みました');
             } catch (error) {
                 console.error('File load error:', error);
@@ -1159,7 +1396,7 @@ class MobileOutlineWriter {
                 const markdownContent = e.target.result;
                 const convertedData = this.parseMarkdownToOutlineWriter(markdownContent);
                 
-                this.data = convertedData;
+                this.data = this.normalizeData(convertedData);
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
@@ -1169,6 +1406,7 @@ class MobileOutlineWriter {
                 this.updateCharCount();
                 this.updateButtonStates();
                 this.updateBreadcrumb();
+                this.scheduleAutoSave();
                 this.showToast('Markdownファイルを読み込みました');
             } catch (error) {
                 this.showToast('Markdownファイルの読み込みに失敗しました');
@@ -1204,9 +1442,17 @@ class MobileOutlineWriter {
         this.closeMenu();
     }
 
-    downloadFileWithName(content, mimeType, defaultName) {
-        const filename = prompt('ファイル名を入力してください:', defaultName);
+    async downloadFileWithName(content, mimeType, defaultName) {
+        let filename = await this.showPromptDialog('ファイル名を入力してください:', defaultName);
         if (filename) {
+            filename = filename.trim();
+        }
+        if (filename) {
+            if (filename.indexOf('.') === -1) {
+                const dotIndex = defaultName.lastIndexOf('.');
+                const ext = dotIndex !== -1 ? defaultName.slice(dotIndex) : '';
+                filename += ext;
+            }
             this.downloadFile(filename, content, mimeType);
             this.showToast('ファイルをダウンロードしました');
         }
@@ -1557,36 +1803,34 @@ class MobileOutlineWriter {
         this.closeMenu();
     }
 
-    showBackupDialog() {
+    async showBackupDialog() {
         if (this.backups.length === 0) {
             this.showToast('利用可能なバックアップがありません');
             return;
         }
-        
-        let message = 'バックアップを選択してください:\n\n';
-        this.backups.forEach((backup, index) => {
-            message += `${index + 1}. ${backup.timestamp}\n`;
-        });
-        
-        const selection = prompt(message + '\n番号を入力してください (1-' + this.backups.length + '):');
-        
-        if (selection) {
-            const index = parseInt(selection) - 1;
-            if (index >= 0 && index < this.backups.length) {
-                this.restoreFromBackup(index);
-            } else {
-                this.showToast('無効な番号です');
-            }
-        }
+
+        // Newest first
+        const orderedIndexes = this.backups.map((_, i) => i).reverse();
+        const labels = orderedIndexes.map((originalIndex, displayIndex) =>
+            `${displayIndex + 1}. ${this.backups[originalIndex].timestamp}`
+        );
+
+        const choice = await this.showChoiceDialog('復元するバックアップを選択', labels);
         this.closeMenu();
+
+        if (choice !== null) {
+            const originalIndex = orderedIndexes[choice];
+            await this.restoreFromBackup(originalIndex);
+        }
     }
 
-    restoreFromBackup(index) {
+    async restoreFromBackup(index) {
         if (index < 0 || index >= this.backups.length) return;
+
+        const ok = await this.showConfirmDialog('現在のデータは失われます。本当に復元しますか？');
+        if (!ok) return;
         
-        if (!confirm('現在のデータは失われます。本当に復元しますか？')) return;
-        
-        this.data = JSON.parse(JSON.stringify(this.backups[index].data));
+        this.data = this.normalizeData(JSON.parse(JSON.stringify(this.backups[index].data)));
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
@@ -1596,7 +1840,8 @@ class MobileOutlineWriter {
         this.updateButtonStates();
         this.updateBreadcrumb();
         this.saveToHistory();
-        
+        this.scheduleAutoSave();
+
         this.showToast('バックアップから復元しました');
     }
 
@@ -1642,131 +1887,105 @@ class MobileOutlineWriter {
     // Google API initialization
     async initializeGoogleAPI() {
         console.log('Google API初期化処理を開始...');
-        
+
         try {
-            // 設定の検証
-            console.log('設定の検証中...');
-            console.log('GOOGLE_CONFIG:', typeof GOOGLE_CONFIG !== 'undefined' ? 'defined' : 'undefined');
-            
             if (typeof GOOGLE_CONFIG === 'undefined') {
                 console.error('GOOGLE_CONFIG が定義されていません。config.jsが読み込まれているか確認してください。');
-                this.showToast('設定ファイルが見つかりません');
                 return;
             }
-            
-            console.log('Client ID:', GOOGLE_CONFIG.CLIENT_ID ? '設定済み' : '未設定');
-            console.log('Scopes:', GOOGLE_CONFIG.SCOPES ? '設定済み' : '未設定');
-            
+
             if (!validateGoogleConfig()) {
                 console.warn('Google Drive機能は利用できません。config.jsを設定してください。');
                 console.log(SETUP_INSTRUCTIONS);
-                this.showToast('Google Drive設定が無効です');
                 return;
             }
-            console.log('設定検証完了');
 
-            // Google API Client Library と GIS が読み込まれるのを待つ
-            console.log('Google APIライブラリの読み込み待機中...');
+            // Google Identity Services (GIS) が読み込まれるのを待つ
             await this.waitForGoogleAPIs();
-            console.log('Google APIライブラリ読み込み完了');
 
-            // Google Drive API クライアントを初期化
-            console.log('gapi.client初期化中...');
-            await new Promise((resolve, reject) => {
-                gapi.load('client', {
-                    callback: resolve,
-                    onerror: reject
-                });
-            });
-            console.log('gapi.client初期化完了');
-
-            console.log('Google Client初期化中...');
-            try {
-                // ローカル環境では簡素な初期化
-                if (location.protocol === 'file:') {
-                    console.log('ローカル環境を検出、簡素な初期化を実行...');
-                    await gapi.client.init({});
-                } else {
-                    await gapi.client.init({
-                        discoveryDocs: [GOOGLE_CONFIG.DISCOVERY_URL]
-                    });
-                }
-                console.log('Google Client初期化完了');
-            } catch (initError) {
-                console.error('gapi.client.init エラー:', initError);
-                // 最小限の初期化で再試行
-                console.log('最小限の初期化で再試行...');
-                await gapi.client.init({});
-                console.log('Google Client初期化完了（最小限）');
-            }
-
-            // Google Identity Services を初期化
-            console.log('tokenClient初期化中...');
+            // Google Identity Services を初期化（Drive REST呼び出しは fetch を直接使用するため gapi クライアントは不要）
             this.tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: GOOGLE_CONFIG.CLIENT_ID,
                 scope: GOOGLE_CONFIG.SCOPES,
                 callback: (response) => {
-                    console.log('OAuth callback:', response);
                     if (response.error) {
                         console.error('OAuth エラー:', response.error);
+                        if (this.pendingAutoSync) {
+                            this.pendingAutoSync = false;
+                            console.log('自動同期用のサイレントトークン取得に失敗しました（ユーザー操作が必要です）');
+                            return;
+                        }
                         this.showToast(`認証に失敗しました: ${response.error}`);
-                    } else {
-                        console.log('OAuth 成功');
-                        this.accessToken = response.access_token;
-                        this.onSignInSuccess();
+                        return;
+                    }
+
+                    this.accessToken = response.access_token;
+                    this.tokenExpiresAt = Date.now() + (response.expires_in ? (response.expires_in - 60) * 1000 : 55 * 60 * 1000);
+
+                    if (this.pendingAutoSync) {
+                        this.pendingAutoSync = false;
+                        this.autoSyncFromDrive();
+                        return;
+                    }
+
+                    this.onSignInSuccess();
+                },
+                error_callback: () => {
+                    if (this.pendingAutoSync) {
+                        this.pendingAutoSync = false;
+                        console.log('自動同期用のサイレントトークン取得に失敗しました');
                     }
                 }
             });
-            console.log('tokenClient初期化完了');
 
             this.gapiInitialized = true;
             console.log('Google API初期化が完全に完了しました');
-            this.showToast('Google Drive機能が利用可能になりました');
-            
+
+            // 自動同期設定が有効な場合、サイレントにトークンを取得してDriveと同期する
+            if (this.driveConfig.syncEnabled && this.driveConfig.fileId) {
+                try {
+                    this.pendingAutoSync = true;
+                    this.tokenClient.requestAccessToken({ prompt: '' });
+                } catch (autoSyncError) {
+                    this.pendingAutoSync = false;
+                    console.log('自動同期の開始に失敗しました:', autoSyncError);
+                }
+            }
+
         } catch (error) {
             console.error('Google API初期化エラー:', error);
             this.gapiInitialized = false;
-            this.showToast(`Google Drive機能の初期化に失敗しました: ${error.message}`);
-            
-            // 初期化失敗時の詳細情報を表示
-            console.log('初期化失敗時の詳細情報:');
-            console.log('- gapiInitialized:', this.gapiInitialized);
-            console.log('- tokenClient:', this.tokenClient);
-            console.log('- typeof gapi:', typeof gapi);
-            console.log('- typeof google:', typeof google);
-            console.log('- google.accounts:', typeof google !== 'undefined' ? typeof google.accounts : 'undefined');
         }
     }
 
     async initializeGoogleAPIWithRetry(maxRetries = 3, retryDelay = 2000) {
         let attempt = 1;
-        
+
         while (attempt <= maxRetries) {
             try {
                 console.log(`Google API 初期化試行 ${attempt}/${maxRetries}`);
                 await this.initializeGoogleAPI();
-                
+
                 // 成功した場合は終了
                 if (this.gapiInitialized) {
                     console.log('Google API 初期化が成功しました');
                     return;
                 }
-                
+
                 // gapiInitialized が false の場合は失敗と判断
                 throw new Error('初期化は完了したが、gapiInitialized が false です');
-                
+
             } catch (error) {
                 console.error(`Google API 初期化試行 ${attempt} 失敗:`, error.message);
-                
+
                 if (attempt === maxRetries) {
                     console.error('Google API 初期化の最大試行回数に達しました。Google Drive機能は利用できません。');
-                    this.showToast('Google Drive機能の初期化に失敗しました');
                     return;
                 }
-                
+
                 console.log(`${retryDelay}ms 後に再試行します...`);
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
-                
+
                 // 次の試行では待機時間を増加
                 retryDelay = Math.min(retryDelay * 1.5, 10000);
                 attempt++;
@@ -1775,43 +1994,30 @@ class MobileOutlineWriter {
     }
 
     async waitForGoogleAPIs() {
-        // gapi と google.accounts の読み込みを待つ
+        // google.accounts (GIS) の読み込みを待つ
         let attempts = 0;
         const maxAttempts = 100; // 10秒まで待機
-        
-        console.log('Google API ライブラリの読み込み状況を確認中...');
-        
+
         while (attempts < maxAttempts) {
-            const gapiStatus = typeof gapi !== 'undefined' ? 'loaded' : 'not loaded';
-            const googleStatus = typeof google !== 'undefined' ? 'loaded' : 'not loaded';
-            const accountsStatus = typeof google !== 'undefined' && google.accounts ? 'loaded' : 'not loaded';
-            const oauth2Status = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 ? 'loaded' : 'not loaded';
-            const tokenClientStatus = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && 
-                                      typeof google.accounts.oauth2.initTokenClient === 'function' ? 'loaded' : 'not loaded';
-            
-            // 詳細なステータスを5回ごとに表示
-            if (attempts % 5 === 0) {
-                console.log(`Google API 読み込み状況 (${attempts + 1}/${maxAttempts}):`);
-                console.log(`  - gapi: ${gapiStatus}`);
-                console.log(`  - google: ${googleStatus}`);
-                console.log(`  - google.accounts: ${accountsStatus}`);
-                console.log(`  - google.accounts.oauth2: ${oauth2Status}`);
-                console.log(`  - initTokenClient: ${tokenClientStatus}`);
+            // 詳細なステータスを20回ごとに表示
+            if (attempts % 20 === 0) {
+                const tokenClientStatus = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 &&
+                                          typeof google.accounts.oauth2.initTokenClient === 'function' ? 'loaded' : 'not loaded';
+                console.log(`Google API 読み込み状況 (${attempts + 1}/${maxAttempts}): initTokenClient=${tokenClientStatus}`);
             }
-            
-            if (typeof gapi !== 'undefined' && 
-                typeof google !== 'undefined' && 
-                google.accounts && 
+
+            if (typeof google !== 'undefined' &&
+                google.accounts &&
                 google.accounts.oauth2 &&
                 typeof google.accounts.oauth2.initTokenClient === 'function') {
                 console.log('Google API libraries loaded successfully');
                 return;
             }
-            
+
             await new Promise(resolve => setTimeout(resolve, 100));
             attempts++;
         }
-        
+
         throw new Error('Google API libraries failed to load after 10 seconds');
     }
 
@@ -1825,6 +2031,7 @@ class MobileOutlineWriter {
                 this.driveConfig.fileName = savedConfig.fileName || this.driveConfig.fileName;
                 this.driveConfig.fileId = savedConfig.fileId || this.driveConfig.fileId;
                 this.driveConfig.lastSync = savedConfig.lastSync || this.driveConfig.lastSync;
+                this.driveConfig.syncEnabled = savedConfig.syncEnabled || false;
                 this.updateDriveStatus();
             }
         } catch (e) {
@@ -1838,7 +2045,8 @@ class MobileOutlineWriter {
             const configToSave = {
                 fileName: this.driveConfig.fileName,
                 fileId: this.driveConfig.fileId,
-                lastSync: this.driveConfig.lastSync
+                lastSync: this.driveConfig.lastSync,
+                syncEnabled: this.driveConfig.syncEnabled
             };
             localStorage.setItem('outlinewriter-drive-config', JSON.stringify(configToSave));
         } catch (e) {
@@ -1846,12 +2054,39 @@ class MobileOutlineWriter {
         }
     }
 
+    // アクセストークンが有効かどうか
+    isTokenValid() {
+        return !!this.accessToken && !!this.tokenExpiresAt && Date.now() < this.tokenExpiresAt;
+    }
+
+    // 再ログインを促すトースト表示と認証状態のクリア
+    handleAuthExpired() {
+        this.accessToken = null;
+        this.tokenExpiresAt = null;
+        this.driveConfig.connected = false;
+        this.updateAuthStatus();
+        this.updateDriveStatus();
+        this.showToast('認証の有効期限が切れました。再ログインしてください');
+    }
+
+    // Drive REST API呼び出し用の共通ヘルパー（fetchのラッパー）
+    async driveFetch(url, options = {}) {
+        const headers = Object.assign({}, options.headers, {
+            'Authorization': `Bearer ${this.accessToken}`
+        });
+
+        const response = await fetch(url, Object.assign({}, options, { headers }));
+
+        if (response.status === 401) {
+            this.handleAuthExpired();
+            throw new Error('認証の有効期限が切れました。再ログインしてください');
+        }
+
+        return response;
+    }
+
     // Google 認証関連
     async signInToGoogle() {
-        console.log('signInToGoogle() が呼ばれました');
-        console.log('gapiInitialized:', this.gapiInitialized);
-        console.log('tokenClient:', this.tokenClient);
-        
         if (!this.gapiInitialized) {
             console.error('Google APIが初期化されていません');
             this.showToast('Google APIが初期化されていません');
@@ -1865,7 +2100,6 @@ class MobileOutlineWriter {
         }
 
         try {
-            console.log('トークン取得を開始...');
             // Google Identity Services を使用してトークンを取得
             this.tokenClient.requestAccessToken();
         } catch (error) {
@@ -1892,9 +2126,6 @@ class MobileOutlineWriter {
 
     async onSignInSuccess() {
         try {
-            // アクセストークンを設定
-            gapi.client.setToken({ access_token: this.accessToken });
-            
             // ユーザー情報を直接APIで取得
             const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
                 headers: {
@@ -1987,25 +2218,25 @@ class MobileOutlineWriter {
 
     // ダイアログ管理
     openDriveSetupDialog() {
-        console.log('openDriveSetupDialog called');
-        console.log('driveSetupDialog element:', this.elements.driveSetupDialog);
-        
         if (!this.elements.driveSetupDialog) {
             console.error('Drive setup dialog element not found');
             this.showToast('ダイアログ要素が見つかりません');
             return;
         }
-        
+
+        if (!this.gapiInitialized) {
+            this.showToast('Google APIを初期化中、または初期化に失敗しています');
+        }
+
         try {
             this.elements.driveFileName.value = this.driveConfig.fileName || 'OutlineWriter-data.json';
             this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
-            
+
             this.updateAuthStatus();
             this.updateFileInfo();
-            
-            console.log('Removing hidden class from dialog');
+
             this.elements.driveSetupDialog.classList.remove('hidden');
-            
+
             // Force display to ensure visibility - ポップアップとして最前面に表示
             this.elements.driveSetupDialog.style.position = 'fixed';
             this.elements.driveSetupDialog.style.top = '0';
@@ -2016,11 +2247,7 @@ class MobileOutlineWriter {
             this.elements.driveSetupDialog.style.display = 'block';
             this.elements.driveSetupDialog.style.opacity = '1';
             this.elements.driveSetupDialog.style.pointerEvents = 'auto';
-            
-            console.log('Dialog classes after removal:', this.elements.driveSetupDialog.className);
-            console.log('Dialog computed display:', window.getComputedStyle(this.elements.driveSetupDialog).display);
-            console.log('Dialog computed opacity:', window.getComputedStyle(this.elements.driveSetupDialog).opacity);
-            
+
             this.closeMenu();
         } catch (error) {
             console.error('Error opening drive setup dialog:', error);
@@ -2029,7 +2256,6 @@ class MobileOutlineWriter {
     }
 
     closeDriveSetupDialog() {
-        console.log('Closing drive setup dialog');
         this.elements.driveSetupDialog.classList.add('hidden');
         
         // Remove all forced styles to let CSS take over
@@ -2066,40 +2292,45 @@ class MobileOutlineWriter {
 
     // ファイル操作
     async selectExistingFile() {
-        if (!this.gapiInitialized || !this.driveConfig.connected) {
+        if (!this.driveConfig.connected) {
             this.showToast('まずGoogleアカウントにログインしてください');
+            return;
+        }
+        if (!this.isTokenValid()) {
+            this.handleAuthExpired();
             return;
         }
 
         try {
             // Drive内のJSONファイルを検索
-            const response = await gapi.client.drive.files.list({
-                q: "name contains '.json' and mimeType='application/json'",
-                pageSize: 10,
-                fields: 'files(id, name, modifiedTime)'
-            });
+            const query = "name contains '.json' and mimeType='application/json' and trashed=false";
+            const url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(query) +
+                '&pageSize=10&fields=' + encodeURIComponent('files(id,name,modifiedTime)');
+            const response = await this.driveFetch(url);
 
-            const files = response.result.files;
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            const files = result.files || [];
             if (files.length === 0) {
                 this.showToast('JSONファイルが見つかりません');
                 return;
             }
 
-            // 簡単なファイル選択（実際のアプリではより洗練されたUIを使用）
-            let fileList = 'ファイルを選択してください:\n\n';
-            files.forEach((file, index) => {
+            const labels = files.map((file) => {
                 const modifiedDate = new Date(file.modifiedTime).toLocaleString('ja-JP');
-                fileList += `${index + 1}. ${file.name} (${modifiedDate})\n`;
+                return `${file.name} (${modifiedDate})`;
             });
 
-            const selection = prompt(fileList + '\n番号を入力してください:');
-            const index = parseInt(selection) - 1;
+            const index = await this.showChoiceDialog('Driveファイルを選択', labels);
 
-            if (index >= 0 && index < files.length) {
+            if (index !== null && index >= 0 && index < files.length) {
                 const selectedFile = files[index];
                 this.driveConfig.fileId = selectedFile.id;
                 this.driveConfig.fileName = selectedFile.name;
-                
+
                 this.updateFileInfo();
                 this.updateDriveStatus();
                 this.showToast(`ファイル「${selectedFile.name}」を選択しました`);
@@ -2111,8 +2342,12 @@ class MobileOutlineWriter {
     }
 
     async createNewFile() {
-        if (!this.gapiInitialized || !this.driveConfig.connected) {
+        if (!this.driveConfig.connected) {
             this.showToast('まずGoogleアカウントにログインしてください');
+            return;
+        }
+        if (!this.isTokenValid()) {
+            this.handleAuthExpired();
             return;
         }
 
@@ -2135,11 +2370,8 @@ class MobileOutlineWriter {
             form.append('metadata', new Blob([JSON.stringify(fileMetadata)], {type: 'application/json'}));
             form.append('file', new Blob([JSON.stringify(initialData, null, 2)], {type: 'application/json'}));
 
-            const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            const response = await this.driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
                 method: 'POST',
-                headers: new Headers({
-                    'Authorization': `Bearer ${this.accessToken}`
-                }),
                 body: form
             });
 
@@ -2147,7 +2379,7 @@ class MobileOutlineWriter {
                 const result = await response.json();
                 this.driveConfig.fileId = result.id;
                 this.driveConfig.fileName = fileName;
-                
+
                 this.updateFileInfo();
                 this.updateDriveStatus();
                 this.showToast(`ファイル「${fileName}」を作成しました`);
@@ -2178,29 +2410,32 @@ class MobileOutlineWriter {
     updateSyncInfo() {
         const localTimestamp = localStorage.getItem('outlinewriter-data-timestamp') || 'なし';
         const lastSync = this.driveConfig.lastSync || 'なし';
-        
+
         this.elements.localTimestamp.textContent = localTimestamp;
         this.elements.lastSyncTimestamp.textContent = lastSync;
-        
+
         // Drive timestamp will be updated when we fetch from Drive
         this.elements.driveTimestamp.textContent = '取得中...';
         this.fetchDriveTimestamp();
     }
 
     async fetchDriveTimestamp() {
-        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
+        if (!this.driveConfig.connected || !this.driveConfig.fileId) {
             this.elements.driveTimestamp.textContent = '未設定';
+            return;
+        }
+        if (!this.isTokenValid()) {
+            this.elements.driveTimestamp.textContent = '未認証';
             return;
         }
 
         try {
-            const response = await gapi.client.drive.files.get({
-                fileId: this.driveConfig.fileId,
-                fields: 'modifiedTime'
-            });
+            const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?fields=modifiedTime`;
+            const response = await this.driveFetch(url);
 
-            if (response.status === 200) {
-                const modifiedTime = new Date(response.result.modifiedTime).toLocaleString('ja-JP');
+            if (response.ok) {
+                const result = await response.json();
+                const modifiedTime = new Date(result.modifiedTime).toLocaleString('ja-JP');
                 this.elements.driveTimestamp.textContent = modifiedTime;
             } else {
                 this.elements.driveTimestamp.textContent = 'エラー';
@@ -2212,8 +2447,12 @@ class MobileOutlineWriter {
     }
 
     async uploadToDrive() {
-        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
+        if (!this.driveConfig.connected || !this.driveConfig.fileId) {
             this.showToast('Drive設定を完了してください');
+            return;
+        }
+        if (!this.isTokenValid()) {
+            this.handleAuthExpired();
             return;
         }
 
@@ -2222,25 +2461,22 @@ class MobileOutlineWriter {
         try {
             const dataToUpload = this.createExportData();
 
-            const response = await gapi.client.request({
-                path: `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.fileId}`,
+            const url = `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.fileId}?uploadType=media`;
+            const response = await this.driveFetch(url, {
                 method: 'PATCH',
-                params: {
-                    uploadType: 'media'
-                },
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(dataToUpload, null, 2)
             });
 
-            if (response.status === 200) {
+            if (response.ok) {
                 this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
                 this.saveConfig();
-                
+
                 // ローカルタイムスタンプも更新
                 localStorage.setItem('outlinewriter-data-timestamp', dataToUpload.timestamp);
-                
+
                 this.hideSyncProgress();
                 this.updateSyncInfo();
                 this.showToast('Driveにアップロードしました');
@@ -2254,51 +2490,58 @@ class MobileOutlineWriter {
         }
     }
 
+    // Driveからデータを取得し、現在のアウトラインに反映する（UIダイアログの有無に依存しない）
+    async fetchAndApplyDriveData() {
+        const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?alt=media`;
+        const response = await this.driveFetch(url);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const driveData = await response.json();
+
+        if (!driveData.data) {
+            throw new Error('無効なデータ形式です');
+        }
+
+        this.data = this.normalizeData(driveData.data);
+        this.currentItem = null;
+        this.elements.currentTitle.value = '';
+        this.elements.currentContent.value = '';
+        this.elements.isHeading.checked = false;
+        this.updateHierarchyPaths();
+        this.renderOutline();
+        this.updateCharCount();
+        this.updateButtonStates();
+        this.updateBreadcrumb();
+        this.saveToHistory();
+        this.scheduleAutoSave();
+
+        this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+        this.saveConfig();
+
+        // ローカルタイムスタンプを更新
+        localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
+    }
+
     async downloadFromDrive() {
-        if (!this.gapiInitialized || !this.driveConfig.connected || !this.driveConfig.fileId) {
+        if (!this.driveConfig.connected || !this.driveConfig.fileId) {
             this.showToast('Drive設定を完了してください');
+            return;
+        }
+        if (!this.isTokenValid()) {
+            this.handleAuthExpired();
             return;
         }
 
         this.showSyncProgress();
 
         try {
-            const response = await gapi.client.drive.files.get({
-                fileId: this.driveConfig.fileId,
-                alt: 'media'
-            });
-
-            if (response.status === 200) {
-                const driveData = JSON.parse(response.body);
-                
-                if (driveData.data) {
-                    this.data = driveData.data;
-                    this.currentItem = null;
-                    this.elements.currentTitle.value = '';
-                    this.elements.currentContent.value = '';
-                    this.elements.isHeading.checked = false;
-                    this.updateHierarchyPaths();
-                    this.renderOutline();
-                    this.updateCharCount();
-                    this.updateButtonStates();
-                    this.updateBreadcrumb();
-                    this.saveToHistory();
-                    
-                    this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
-                    this.saveConfig();
-                    
-                    // ローカルタイムスタンプを更新
-                    localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
-                    
-                    this.hideSyncProgress();
-                    this.updateSyncInfo();
-                    this.showToast('Driveからダウンロードしました');
-                } else {
-                    throw new Error('無効なデータ形式です');
-                }
-            } else {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
+            await this.fetchAndApplyDriveData();
+            this.hideSyncProgress();
+            this.updateSyncInfo();
+            this.showToast('Driveからダウンロードしました');
         } catch (error) {
             this.hideSyncProgress();
             console.error('ダウンロードエラー:', error);
@@ -2306,24 +2549,60 @@ class MobileOutlineWriter {
         }
     }
 
+    // 起動時のサイレント認証成功後に呼ばれる自動同期（ダイアログUIには触れない）
+    async autoSyncFromDrive() {
+        try {
+            await this.fetchAndApplyDriveData();
+            this.showToast('Driveから自動同期しました');
+        } catch (error) {
+            console.log('自動同期に失敗しました:', error.message);
+        }
+    }
+
     showSyncProgress() {
-        this.elements.syncProgress.classList.remove('hidden');
+        if (this.elements.syncProgress) {
+            this.elements.syncProgress.classList.remove('hidden');
+        }
     }
 
     hideSyncProgress() {
-        this.elements.syncProgress.classList.add('hidden');
+        if (this.elements.syncProgress) {
+            this.elements.syncProgress.classList.add('hidden');
+        }
+    }
+
+    // Google API 状態診断
+    diagnoseGoogleAPIStatus() {
+        const status = {
+            gisLoaded: typeof google !== 'undefined' && !!(google.accounts && google.accounts.oauth2),
+            gapiInitialized: this.gapiInitialized,
+            tokenClient: !!this.tokenClient,
+            accessTokenValid: this.isTokenValid(),
+            connected: this.driveConfig.connected,
+            fileId: this.driveConfig.fileId || '(未設定)',
+            clientIdConfigured: typeof GOOGLE_CONFIG !== 'undefined' && validateGoogleConfig()
+        };
+
+        console.log('=== Google API 診断結果 ===');
+        if (typeof console.table === 'function') {
+            console.table(status);
+        } else {
+            console.log(status);
+        }
+
+        return status;
     }
 
     // PWA setup
     setupPWA() {
         // Register service worker when available
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js')
+            navigator.serviceWorker.register('./sw.js')
                 .then(registration => {
                     console.log('Service Worker registered');
                 })
                 .catch(error => {
-                    console.log('Service Worker registration failed');
+                    console.error('Service Worker registration failed:', error);
                 });
         }
 
