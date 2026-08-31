@@ -1,9 +1,9 @@
 /**
  * OutlineWriter Mobile - Service Worker
- * バージョン付きキャッシュによるアプリシェルのキャッシュファースト配信
+ * バージョン付きキャッシュによるアプリシェルのネットワークファースト配信
  */
 
-const CACHE_NAME = 'outlinewriter-v1';
+const CACHE_NAME = 'outlinewriter-v2';
 
 const APP_SHELL = [
     './',
@@ -37,7 +37,7 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// フェッチ: キャッシュファースト（同一オリジンのGETのみ処理）
+// フェッチ: ネットワークファースト（同一オリジンのGETのみ処理、オフライン時はキャッシュにフォールバック）
 self.addEventListener('fetch', (event) => {
     const request = event.request;
 
@@ -53,8 +53,14 @@ self.addEventListener('fetch', (event) => {
     }
 
     event.respondWith(
-        caches.match(request).then((cached) => {
-            return cached || fetch(request);
-        })
+        fetch(request)
+            .then((response) => {
+                if (response && response.ok && response.type === 'basic') {
+                    const responseClone = response.clone();
+                    caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
+                }
+                return response;
+            })
+            .catch(() => caches.match(request))
     );
 });

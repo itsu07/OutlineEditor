@@ -99,6 +99,7 @@ body {
 .hamburger::after {
     content: '';
     position: absolute;
+    left: 0;
     width: 20px;
     height: 2px;
     background: var(--text-color);
@@ -937,11 +938,6 @@ body {
 
 .btn.secondary:hover {
     background: rgba(33, 150, 243, 0.05);
-}
-
-.btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
 }
 
 /* Sync Dialog Styles */

@@ -765,7 +765,7 @@ class MobileOutlineWriter {
         });
 
         if (this.currentItem) {
-            const activeEl = document.querySelector(`[data-id="${this.currentItem.id}"]`);
+            const activeEl = document.querySelector(`.outline-item-content-mobile[data-id="${this.currentItem.id}"]`);
             if (activeEl) {
                 activeEl.classList.add('active');
             }
@@ -1158,22 +1158,23 @@ class MobileOutlineWriter {
         if (!this.data || !this.data.items) {
             return;
         }
-        this.updateItemHierarchy(this.data.items, '', 0);
+        this.updateItemHierarchy(this.data.items, '', 0, null);
     }
 
-    updateItemHierarchy(items, parentPath, level) {
+    updateItemHierarchy(items, parentPath, level, parentId) {
         if (!items || !Array.isArray(items)) {
             return;
         }
         items.forEach((item, index) => {
             const position = index + 1;
             const currentPath = parentPath ? `${parentPath}.${position}` : `${position}`;
-            
+
             item.hierarchyPath = currentPath;
             item.level = level;
-            
+            item.parentId = parentId;
+
             if (item.children && item.children.length > 0) {
-                this.updateItemHierarchy(item.children, currentPath, level + 1);
+                this.updateItemHierarchy(item.children, currentPath, level + 1, item.id);
             }
         });
     }
@@ -1200,6 +1201,7 @@ class MobileOutlineWriter {
     }
 
     undo() {
+        clearTimeout(this.historyTimer);
         if (this.historyIndex > 0) {
             this.historyIndex--;
             this.data = JSON.parse(JSON.stringify(this.history[this.historyIndex]));
@@ -1218,6 +1220,7 @@ class MobileOutlineWriter {
     }
 
     redo() {
+        clearTimeout(this.historyTimer);
         if (this.historyIndex < this.history.length - 1) {
             this.historyIndex++;
             this.data = JSON.parse(JSON.stringify(this.history[this.historyIndex]));
@@ -1341,6 +1344,7 @@ class MobileOutlineWriter {
 
     loadFromFile(event) {
         const file = event.target.files[0];
+        event.target.value = '';
         if (!file) return;
 
         const reader = new FileReader();
@@ -1388,6 +1392,7 @@ class MobileOutlineWriter {
 
     loadFromMarkdownFile(event) {
         const file = event.target.files[0];
+        event.target.value = '';
         if (!file) return;
 
         const reader = new FileReader();
@@ -1541,7 +1546,7 @@ class MobileOutlineWriter {
                 if (currentContent.length > 0) {
                     currentContent.push('');
                 }
-            } else if (trimmedLine && !trimmedLine.startsWith('<!--') && !trimmedLine.startsWith('#') && !trimmedLine.startsWith('-')) {
+            } else if (trimmedLine && !trimmedLine.startsWith('<!--')) {
                 currentContent.push(line.replace(/^\s+/, ''));
             }
         }
@@ -1789,11 +1794,9 @@ class MobileOutlineWriter {
         };
         
         this.backups.push(backup);
-        
-        if (this.backups.length > this.maxBackups) {
-            this.backups.shift();
-        }
-        
+
+        this.trimBackups();
+
         try {
             localStorage.setItem('outlinewriter-backups', JSON.stringify(this.backups));
             this.showToast(`バックアップを作成しました`);
@@ -1801,6 +1804,18 @@ class MobileOutlineWriter {
             this.showToast('バックアップの作成に失敗しました');
         }
         this.closeMenu();
+    }
+
+    // 上限を超えた場合、自動バックアップを優先的に削除して手動バックアップを守る
+    trimBackups() {
+        while (this.backups.length > this.maxBackups) {
+            const autoIndex = this.backups.findIndex(b => typeof b.timestamp === 'string' && b.timestamp.startsWith('自動バックアップ'));
+            if (autoIndex !== -1) {
+                this.backups.splice(autoIndex, 1);
+            } else {
+                this.backups.shift();
+            }
+        }
     }
 
     async showBackupDialog() {
@@ -1872,11 +1887,9 @@ class MobileOutlineWriter {
         };
         
         this.backups.push(backup);
-        
-        if (this.backups.length > this.maxBackups) {
-            this.backups.shift();
-        }
-        
+
+        this.trimBackups();
+
         try {
             localStorage.setItem('outlinewriter-backups', JSON.stringify(this.backups));
         } catch (e) {
@@ -2142,19 +2155,19 @@ class MobileOutlineWriter {
             } else {
                 // ユーザー情報取得に失敗した場合のフォールバック
                 this.driveConfig.connected = true;
-                this.driveConfig.userEmail = 'user@gmail.com';
-                this.driveConfig.userName = 'ユーザー';
+                this.driveConfig.userEmail = '';
+                this.driveConfig.userName = '';
                 this.showToast('ログインしました');
             }
-            
+
             this.updateAuthStatus();
             this.updateDriveStatus();
-            
+
         } catch (error) {
             console.error('ユーザー情報取得エラー:', error);
             this.driveConfig.connected = true;
-            this.driveConfig.userEmail = 'user@gmail.com';
-            this.driveConfig.userName = 'ユーザー';
+            this.driveConfig.userEmail = '';
+            this.driveConfig.userName = '';
             this.updateAuthStatus();
             this.updateDriveStatus();
             this.showToast('ログインしました');
@@ -2178,7 +2191,7 @@ class MobileOutlineWriter {
         if (this.driveConfig.connected) {
             indicator.classList.remove('offline');
             indicator.classList.add('online');
-            text.textContent = `ログイン中: ${this.driveConfig.userEmail}`;
+            text.textContent = this.driveConfig.userEmail ? `ログイン中: ${this.driveConfig.userEmail}` : 'ログイン中';
             
             this.elements.googleSignin.classList.add('hidden');
             this.elements.googleSignout.classList.remove('hidden');
