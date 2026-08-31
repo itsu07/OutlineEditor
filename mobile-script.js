@@ -32,6 +32,8 @@ class MobileOutlineWriter {
         this.accessToken = null;
         this.tokenExpiresAt = null;
         this.pendingAutoSync = false;
+        this.pendingTokenResolve = null;
+        this.pendingTokenTimeout = null;
         this.gapiInitialized = false;
         
         this.initializeElements();
@@ -1260,6 +1262,7 @@ class MobileOutlineWriter {
         try {
             localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
             localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
+            localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
             this.showToast('データを保存しました');
         } catch (e) {
             this.showToast('保存に失敗しました');
@@ -1273,6 +1276,7 @@ class MobileOutlineWriter {
             try {
                 localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
                 localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
+                localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
             } catch (e) {
                 console.error('自動保存に失敗しました:', e);
             }
@@ -1920,9 +1924,16 @@ class MobileOutlineWriter {
             this.tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: GOOGLE_CONFIG.CLIENT_ID,
                 scope: GOOGLE_CONFIG.SCOPES,
-                callback: (response) => {
+                callback: async (response) => {
                     if (response.error) {
                         console.error('OAuth エラー:', response.error);
+                        if (this.pendingTokenResolve) {
+                            const resolve = this.pendingTokenResolve;
+                            this.pendingTokenResolve = null;
+                            clearTimeout(this.pendingTokenTimeout);
+                            resolve(false);
+                            return;
+                        }
                         if (this.pendingAutoSync) {
                             this.pendingAutoSync = false;
                             console.log('自動同期用のサイレントトークン取得に失敗しました（ユーザー操作が必要です）');
@@ -1935,8 +1946,18 @@ class MobileOutlineWriter {
                     this.accessToken = response.access_token;
                     this.tokenExpiresAt = Date.now() + (response.expires_in ? (response.expires_in - 60) * 1000 : 55 * 60 * 1000);
 
+                    if (this.pendingTokenResolve) {
+                        const resolve = this.pendingTokenResolve;
+                        this.pendingTokenResolve = null;
+                        clearTimeout(this.pendingTokenTimeout);
+                        resolve(true);
+                        return;
+                    }
+
                     if (this.pendingAutoSync) {
                         this.pendingAutoSync = false;
+                        // サイレント同期でもログイン状態としてUIに反映する（トーストは出さない）
+                        await this.onSignInSuccess(true);
                         this.autoSyncFromDrive();
                         return;
                     }
@@ -1944,6 +1965,13 @@ class MobileOutlineWriter {
                     this.onSignInSuccess();
                 },
                 error_callback: () => {
+                    if (this.pendingTokenResolve) {
+                        const resolve = this.pendingTokenResolve;
+                        this.pendingTokenResolve = null;
+                        clearTimeout(this.pendingTokenTimeout);
+                        resolve(false);
+                        return;
+                    }
                     if (this.pendingAutoSync) {
                         this.pendingAutoSync = false;
                         console.log('自動同期用のサイレントトークン取得に失敗しました');
@@ -2072,6 +2100,26 @@ class MobileOutlineWriter {
         return !!this.accessToken && !!this.tokenExpiresAt && Date.now() < this.tokenExpiresAt;
     }
 
+    // トークンが有効ならそのまま、期限切れならサイレント更新を試みる（ユーザー操作なしで解決するPromiseを返す）
+    ensureToken() {
+        return new Promise((resolve) => {
+            if (this.isTokenValid()) {
+                resolve(true);
+                return;
+            }
+            if (!this.tokenClient) {
+                resolve(false);
+                return;
+            }
+            this.pendingTokenResolve = resolve;
+            this.pendingTokenTimeout = setTimeout(() => {
+                this.pendingTokenResolve = null;
+                resolve(false);
+            }, 10000);
+            this.tokenClient.requestAccessToken({ prompt: '' });
+        });
+    }
+
     // 再ログインを促すトースト表示と認証状態のクリア
     handleAuthExpired() {
         this.accessToken = null;
@@ -2137,7 +2185,7 @@ class MobileOutlineWriter {
         }
     }
 
-    async onSignInSuccess() {
+    async onSignInSuccess(silent = false) {
         try {
             // ユーザー情報を直接APIで取得
             const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
@@ -2145,19 +2193,19 @@ class MobileOutlineWriter {
                     'Authorization': `Bearer ${this.accessToken}`
                 }
             });
-            
+
             if (response.ok) {
                 const userInfo = await response.json();
                 this.driveConfig.connected = true;
                 this.driveConfig.userEmail = userInfo.email;
                 this.driveConfig.userName = userInfo.name;
-                this.showToast(`${userInfo.name}としてログインしました`);
+                if (!silent) this.showToast(`${userInfo.name}としてログインしました`);
             } else {
                 // ユーザー情報取得に失敗した場合のフォールバック
                 this.driveConfig.connected = true;
                 this.driveConfig.userEmail = '';
                 this.driveConfig.userName = '';
-                this.showToast('ログインしました');
+                if (!silent) this.showToast('ログインしました');
             }
 
             this.updateAuthStatus();
@@ -2170,7 +2218,7 @@ class MobileOutlineWriter {
             this.driveConfig.userName = '';
             this.updateAuthStatus();
             this.updateDriveStatus();
-            this.showToast('ログインしました');
+            if (!silent) this.showToast('ログインしました');
         }
     }
 
@@ -2178,7 +2226,10 @@ class MobileOutlineWriter {
         this.driveConfig.connected = false;
         this.driveConfig.userEmail = '';
         this.driveConfig.fileId = '';
-        
+        this.driveConfig.syncEnabled = false;
+        this.tokenExpiresAt = null;
+
+        this.saveConfig();
         this.updateAuthStatus();
         this.updateDriveStatus();
         this.showToast('ログアウトしました');
@@ -2309,7 +2360,7 @@ class MobileOutlineWriter {
             this.showToast('まずGoogleアカウントにログインしてください');
             return;
         }
-        if (!this.isTokenValid()) {
+        if (!(await this.ensureToken())) {
             this.handleAuthExpired();
             return;
         }
@@ -2359,7 +2410,7 @@ class MobileOutlineWriter {
             this.showToast('まずGoogleアカウントにログインしてください');
             return;
         }
-        if (!this.isTokenValid()) {
+        if (!(await this.ensureToken())) {
             this.handleAuthExpired();
             return;
         }
@@ -2464,7 +2515,7 @@ class MobileOutlineWriter {
             this.showToast('Drive設定を完了してください');
             return;
         }
-        if (!this.isTokenValid()) {
+        if (!(await this.ensureToken())) {
             this.handleAuthExpired();
             return;
         }
@@ -2489,6 +2540,8 @@ class MobileOutlineWriter {
 
                 // ローカルタイムスタンプも更新
                 localStorage.setItem('outlinewriter-data-timestamp', dataToUpload.timestamp);
+                localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
+                localStorage.setItem('outlinewriter-drive-synced-iso', new Date().toISOString());
 
                 this.hideSyncProgress();
                 this.updateSyncInfo();
@@ -2536,6 +2589,8 @@ class MobileOutlineWriter {
 
         // ローカルタイムスタンプを更新
         localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
+        localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
+        localStorage.setItem('outlinewriter-drive-synced-iso', new Date().toISOString());
     }
 
     async downloadFromDrive() {
@@ -2543,7 +2598,7 @@ class MobileOutlineWriter {
             this.showToast('Drive設定を完了してください');
             return;
         }
-        if (!this.isTokenValid()) {
+        if (!(await this.ensureToken())) {
             this.handleAuthExpired();
             return;
         }
@@ -2562,9 +2617,43 @@ class MobileOutlineWriter {
         }
     }
 
-    // 起動時のサイレント認証成功後に呼ばれる自動同期（ダイアログUIには触れない）
+    // 起動時のサイレント認証成功後に呼ばれる自動同期
     async autoSyncFromDrive() {
         try {
+            const localIso = localStorage.getItem('outlinewriter-data-timestamp-iso');
+            const syncedIso = localStorage.getItem('outlinewriter-drive-synced-iso');
+            const localIsEmpty = !this.data.items.length;
+
+            if (localIso && !localIsEmpty) {
+                const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?fields=modifiedTime`;
+                const response = await this.driveFetch(url);
+                if (response.ok) {
+                    const result = await response.json();
+                    const driveTime = new Date(result.modifiedTime);
+
+                    // 前回同期時刻からの変化で判定（同期直後の自動保存や時計の微妙なズレを吸収）
+                    const TOLERANCE = 5000; // ms
+                    const editedSinceSync = !syncedIso || (new Date(localIso) - new Date(syncedIso) > TOLERANCE);
+                    const driveChangedSinceSync = !syncedIso || (driveTime - new Date(syncedIso) > TOLERANCE);
+
+                    if (editedSinceSync) {
+                        if (!driveChangedSinceSync) {
+                            // Drive側に新しい変更はない。同期するとローカルの編集が失われるだけ
+                            this.showToast('自動同期をスキップしました（ローカルが最新）');
+                            return;
+                        }
+                        const confirmed = await this.showConfirmDialog(
+                            'ローカルのデータの方が新しい可能性があります。Driveのデータで上書きしますか？',
+                            { okLabel: '上書きする', cancelLabel: '同期しない' }
+                        );
+                        if (!confirmed) {
+                            this.showToast('自動同期をスキップしました');
+                            return;
+                        }
+                    }
+                }
+            }
+
             await this.fetchAndApplyDriveData();
             this.showToast('Driveから自動同期しました');
         } catch (error) {
