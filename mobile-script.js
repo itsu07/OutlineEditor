@@ -21,6 +21,8 @@ class MobileOutlineWriter {
         this.driveConfig = {
             fileName: 'OutlineWriter-data.json',
             fileId: '',
+            // Claude等から読むためのGoogleドキュメント（Markdownから変換して保存）
+            docFileId: '',
             connected: false,
             syncEnabled: false,
             lastSync: null,
@@ -1709,10 +1711,13 @@ class MobileOutlineWriter {
         }
     }
 
-    generateMarkdownExport(items, level) {
+    // includeMeta=false で階層コメントを省いた閲覧用Markdownを生成する
+    generateMarkdownExport(items, level, includeMeta = true) {
         let result = '';
         items.forEach(item => {
-            result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
+            if (includeMeta) {
+                result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
+            }
             
             if (this.isHeading(item)) {
                 const headingLevel = Math.min(level + 1, 6);
@@ -1730,7 +1735,7 @@ class MobileOutlineWriter {
                 }
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta);
                 }
             } else {
                 const indent = '  '.repeat(level);
@@ -1746,7 +1751,7 @@ class MobileOutlineWriter {
                 }
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta);
                 }
             }
         });
@@ -2055,6 +2060,7 @@ class MobileOutlineWriter {
                 // ファイル関連の設定のみを読み込み（API設定は不要）
                 this.driveConfig.fileName = savedConfig.fileName || this.driveConfig.fileName;
                 this.driveConfig.fileId = savedConfig.fileId || this.driveConfig.fileId;
+                this.driveConfig.docFileId = savedConfig.docFileId || '';
                 this.driveConfig.lastSync = savedConfig.lastSync || this.driveConfig.lastSync;
                 this.driveConfig.syncEnabled = savedConfig.syncEnabled || false;
                 this.updateDriveStatus();
@@ -2070,6 +2076,7 @@ class MobileOutlineWriter {
             const configToSave = {
                 fileName: this.driveConfig.fileName,
                 fileId: this.driveConfig.fileId,
+                docFileId: this.driveConfig.docFileId,
                 lastSync: this.driveConfig.lastSync,
                 syncEnabled: this.driveConfig.syncEnabled
             };
@@ -2215,6 +2222,7 @@ class MobileOutlineWriter {
         this.driveConfig.connected = false;
         this.driveConfig.userEmail = '';
         this.driveConfig.fileId = '';
+        this.driveConfig.docFileId = '';
         this.driveConfig.syncEnabled = false;
         this.tokenExpiresAt = null;
 
@@ -2382,6 +2390,7 @@ class MobileOutlineWriter {
             if (index !== null && index >= 0 && index < files.length) {
                 const selectedFile = files[index];
                 this.driveConfig.fileId = selectedFile.id;
+                this.driveConfig.docFileId = '';
                 this.driveConfig.fileName = selectedFile.name;
 
                 this.updateFileInfo();
@@ -2431,6 +2440,7 @@ class MobileOutlineWriter {
             if (response.ok) {
                 const result = await response.json();
                 this.driveConfig.fileId = result.id;
+                this.driveConfig.docFileId = '';
                 this.driveConfig.fileName = fileName;
 
                 this.updateFileInfo();
@@ -2532,9 +2542,20 @@ class MobileOutlineWriter {
                 localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
                 localStorage.setItem('outlinewriter-drive-synced-iso', new Date().toISOString());
 
+                // 閲覧用ドキュメントの失敗はJSON同期の成否に影響させない
+                let docError = null;
+                try {
+                    await this.uploadReadableDoc();
+                } catch (e) {
+                    docError = e;
+                    console.error('閲覧用ドキュメントの保存エラー:', e);
+                }
+
                 this.hideSyncProgress();
                 this.updateSyncInfo();
-                this.showToast('Driveにアップロードしました');
+                this.showToast(docError
+                    ? `Driveにアップロードしました（閲覧用ドキュメントの保存に失敗: ${docError.message}）`
+                    : 'Driveにアップロードしました');
             } else {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
@@ -2543,6 +2564,47 @@ class MobileOutlineWriter {
             console.error('アップロードエラー:', error);
             this.showToast(`アップロードに失敗しました: ${error.message}`);
         }
+    }
+
+    // Claude等のDriveコネクタで読めるよう、MarkdownをGoogleドキュメントに変換して保存する
+    // （.mdや.jsonはコネクタでテキストとして読めないため）
+    async uploadReadableDoc() {
+        const markdown = this.generateMarkdownExport(this.data.items, 0, false) || ' ';
+        const docName = (this.driveConfig.fileName || 'OutlineWriter-data').replace(/\.json$/i, '');
+
+        if (this.driveConfig.docFileId) {
+            const url = `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.docFileId}?uploadType=media`;
+            const response = await this.driveFetch(url, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'text/markdown; charset=UTF-8' },
+                body: markdown
+            });
+            if (response.ok) return;
+            // ユーザーが削除した等で見つからない場合は作り直す
+            if (response.status !== 404) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        }
+
+        const metadata = {
+            name: docName,
+            mimeType: 'application/vnd.google-apps.document',
+            parents: ['root']
+        };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([markdown], { type: 'text/markdown' }));
+
+        const response = await this.driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            body: form
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const result = await response.json();
+        this.driveConfig.docFileId = result.id;
+        this.saveConfig();
     }
 
     // Driveからデータを取得し、現在のアウトラインに反映する（UIダイアログの有無に依存しない）
