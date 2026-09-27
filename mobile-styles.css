@@ -1149,3 +1149,45 @@ body {
     opacity: 1;
     pointer-events: auto;
 }
+
+/* 同期先ファイル / 表示中の原稿の表示 */
+.menu-item-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.menu-item-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#selected-file-name,
+#setup-data-source,
+#sync-target-name,
+#sync-data-source {
+    text-align: right;
+    word-break: break-all;
+    margin-left: 8px;
+}
+
+.source-warning {
+    margin: 4px 0 8px;
+    padding: 8px 12px;
+    border-radius: var(--border-radius);
+    background: #FFF3E0;
+    color: #E65100;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.source-warning.hidden {
+    display: none;
+}
+
+.new-file-group {
+    margin-top: 20px;
+}
