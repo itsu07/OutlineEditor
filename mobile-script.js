@@ -1712,8 +1712,9 @@ class MobileOutlineWriter {
     }
 
     // includeMeta=false で階層コメントを省いた閲覧用Markdownを生成する
-    generateMarkdownExport(items, level, includeMeta = true) {
+    generateMarkdownExport(items, level, includeMeta = true, parentTitle = null) {
         let result = '';
+        let afterHeading = false;
         items.forEach(item => {
             if (includeMeta) {
                 result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
@@ -1722,36 +1723,41 @@ class MobileOutlineWriter {
             if (this.isHeading(item)) {
                 const headingLevel = Math.min(level + 1, 6);
                 const hashes = '#'.repeat(headingLevel);
+                // 閲覧用: 直前がリストの場合に見出しが結合されないよう空行を挟む
+                if (!includeMeta && result && !result.endsWith('\n\n')) result += '\n';
                 result += `${hashes} ${item.title}\n\n`;
                 
                 if (item.content.trim()) {
-                    const contentLines = item.content.split('\n');
-                    contentLines.forEach(line => {
-                        if (line.trim()) {
-                            result += `${line}\n`;
-                        }
-                    });
-                    result += '\n';
+                    // 閲覧用は行末の2スペース（改行）で行を保つ。Googleドキュメント変換時に1段落へ結合されるのを防ぐ
+                    const contentLines = item.content.split('\n').filter(line => line.trim());
+                    const lineEnd = includeMeta ? '\n' : '  \n';
+                    result += contentLines.join(lineEnd) + '\n\n';
                 }
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta, item.title);
                 }
+                afterHeading = true;
             } else {
-                const indent = '  '.repeat(level);
-                result += `${indent}- ${item.title}\n`;
-                
-                if (item.content.trim()) {
-                    const contentLines = item.content.split('\n');
-                    contentLines.forEach(line => {
-                        if (line.trim()) {
-                            result += `${indent}  ${line}\n`;
-                        }
-                    });
+                // 閲覧用: 下位見出しの後に続く項目が下位見出しに属して見えないよう、親見出しを「続き」として再掲する
+                if (!includeMeta && afterHeading) {
+                    if (!result.endsWith('\n\n')) result += '\n';
+                    result += parentTitle !== null
+                        ? `${'#'.repeat(Math.min(level, 6))} ${parentTitle}（続き）\n\n`
+                        : '---\n\n';
+                    afterHeading = false;
                 }
+                // 閲覧用: 葉は常に見出し直下のリストなので字下げしない（4スペース以上だとコードブロック扱いになる）
+                const indent = includeMeta ? '  '.repeat(level) : '';
+                const contentLines = item.content.split('\n').filter(line => line.trim());
+                // 閲覧用は行末の2スペースで項目名と本文を別の行に保つ
+                const lineEnd = includeMeta ? '\n' : '  \n';
+                result += `${indent}- ${item.title}${contentLines.length ? lineEnd : '\n'}`;
+                result += contentLines.map(line => `${indent}  ${line}`).join(lineEnd);
+                if (contentLines.length) result += '\n';
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta, item.title);
                 }
             }
         });
