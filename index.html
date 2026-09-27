@@ -149,7 +149,10 @@
                     </button>
                     <button id="drive-sync-mobile" class="menu-item" disabled>
                         <span class="menu-icon">🔄</span>
-                        <span>Drive同期</span>
+                        <span class="menu-item-text">
+                            <span>Drive同期</span>
+                            <small id="drive-target-label" class="menu-item-sub">同期先: 未設定</small>
+                        </span>
                     </button>
                 </div>
                 
@@ -219,25 +222,34 @@
                 </div>
                 
                 <div class="file-section" id="file-section" style="display: none;">
-                    <div class="input-group">
-                        <label for="drive-file-name">ファイル名:</label>
-                        <input type="text" id="drive-file-name" placeholder="OutlineWriter-data.json" value="OutlineWriter-data.json">
-                        <small>Google Driveに保存するファイル名</small>
-                    </div>
-                    
                     <div class="file-info" id="file-info">
                         <div class="info-item">
-                            <span class="info-label">選択ファイル:</span>
+                            <span class="info-label">同期先ファイル:</span>
                             <span id="selected-file-name">未選択</span>
                         </div>
                         <div class="info-item">
-                            <span class="info-label">最終更新:</span>
+                            <span class="info-label">最終同期:</span>
                             <span id="selected-file-modified">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">表示中の原稿:</span>
+                            <span id="setup-data-source">不明（記録なし）</span>
+                        </div>
+                        <div id="setup-source-warning" class="source-warning hidden">
+                            ⚠ 表示中の原稿は同期先ファイルから読み込んだものではありません
                         </div>
                     </div>
                     
                     <div class="file-actions">
                         <button id="select-drive-file" class="btn secondary">既存ファイルを選択</button>
+                    </div>
+
+                    <div class="input-group new-file-group">
+                        <label for="drive-file-name">新規作成時のファイル名:</label>
+                        <input type="text" id="drive-file-name" placeholder="OutlineWriter-data.json" value="OutlineWriter-data.json">
+                        <small>「新規ファイル作成」で、表示中の原稿をこの名前のファイルとしてDriveに作成します</small>
+                    </div>
+                    <div class="file-actions">
                         <button id="create-drive-file" class="btn secondary">新規ファイル作成</button>
                     </div>
                 </div>
@@ -271,6 +283,17 @@
             </div>
             <div class="dialog-content">
                 <div class="sync-info">
+                    <div class="sync-item">
+                        <span class="sync-label">同期先ファイル:</span>
+                        <span id="sync-target-name">-</span>
+                    </div>
+                    <div class="sync-item">
+                        <span class="sync-label">表示中の原稿:</span>
+                        <span id="sync-data-source">-</span>
+                    </div>
+                    <div id="sync-source-warning" class="source-warning hidden">
+                        ⚠ 表示中の原稿は同期先ファイルから読み込んだものではありません
+                    </div>
                     <div class="sync-item">
                         <span class="sync-label">ローカル更新:</span>
                         <span id="local-timestamp">-</span>
