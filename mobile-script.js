@@ -28,6 +28,8 @@ class MobileOutlineWriter {
         this.driveConfig = {
             fileName: 'OutlineWriter-data.json',
             fileId: '',
+            // Claude等から読むためのGoogleドキュメント（Markdownから変換して保存）
+            docFileId: '',
             connected: false,
             syncEnabled: false,
             lastSync: null,
@@ -1792,44 +1794,53 @@ class MobileOutlineWriter {
         }
     }
 
-    generateMarkdownExport(items, level) {
+    // includeMeta=false で階層コメントを省いた閲覧用Markdownを生成する
+    generateMarkdownExport(items, level, includeMeta = true, parentTitle = null) {
         let result = '';
+        let afterHeading = false;
         items.forEach(item => {
-            result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
+            if (includeMeta) {
+                result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
+            }
             
             if (this.isHeading(item)) {
                 const headingLevel = Math.min(level + 1, 6);
                 const hashes = '#'.repeat(headingLevel);
+                // 閲覧用: 直前がリストの場合に見出しが結合されないよう空行を挟む
+                if (!includeMeta && result && !result.endsWith('\n\n')) result += '\n';
                 result += `${hashes} ${item.title}\n\n`;
                 
                 if (item.content.trim()) {
-                    const contentLines = item.content.split('\n');
-                    contentLines.forEach(line => {
-                        if (line.trim()) {
-                            result += `${line}\n`;
-                        }
-                    });
-                    result += '\n';
+                    // 閲覧用は行末の2スペース（改行）で行を保つ。Googleドキュメント変換時に1段落へ結合されるのを防ぐ
+                    const contentLines = item.content.split('\n').filter(line => line.trim());
+                    const lineEnd = includeMeta ? '\n' : '  \n';
+                    result += contentLines.join(lineEnd) + '\n\n';
                 }
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta, item.title);
                 }
+                afterHeading = true;
             } else {
-                const indent = '  '.repeat(level);
-                result += `${indent}- ${item.title}\n`;
-                
-                if (item.content.trim()) {
-                    const contentLines = item.content.split('\n');
-                    contentLines.forEach(line => {
-                        if (line.trim()) {
-                            result += `${indent}  ${line}\n`;
-                        }
-                    });
+                // 閲覧用: 下位見出しの後に続く項目が下位見出しに属して見えないよう、親見出しを「続き」として再掲する
+                if (!includeMeta && afterHeading) {
+                    if (!result.endsWith('\n\n')) result += '\n';
+                    result += parentTitle !== null
+                        ? `${'#'.repeat(Math.min(level, 6))} ${parentTitle}（続き）\n\n`
+                        : '---\n\n';
+                    afterHeading = false;
                 }
+                // 閲覧用: 葉は常に見出し直下のリストなので字下げしない（4スペース以上だとコードブロック扱いになる）
+                const indent = includeMeta ? '  '.repeat(level) : '';
+                const contentLines = item.content.split('\n').filter(line => line.trim());
+                // 閲覧用は行末の2スペースで項目名と本文を別の行に保つ
+                const lineEnd = includeMeta ? '\n' : '  \n';
+                result += `${indent}- ${item.title}${contentLines.length ? lineEnd : '\n'}`;
+                result += contentLines.map(line => `${indent}  ${line}`).join(lineEnd);
+                if (contentLines.length) result += '\n';
                 
                 if (item.children.length > 0) {
-                    result += this.generateMarkdownExport(item.children, level + 1);
+                    result += this.generateMarkdownExport(item.children, level + 1, includeMeta, item.title);
                 }
             }
         });
@@ -2143,6 +2154,7 @@ class MobileOutlineWriter {
                 // ファイル関連の設定のみを読み込み（API設定は不要）
                 this.driveConfig.fileName = savedConfig.fileName || this.driveConfig.fileName;
                 this.driveConfig.fileId = savedConfig.fileId || this.driveConfig.fileId;
+                this.driveConfig.docFileId = savedConfig.docFileId || '';
                 this.driveConfig.lastSync = savedConfig.lastSync || this.driveConfig.lastSync;
                 this.driveConfig.syncEnabled = savedConfig.syncEnabled || false;
             }
@@ -2229,6 +2241,8 @@ class MobileOutlineWriter {
     setDriveTarget(fileId, fileName) {
         if (fileId !== this.driveConfig.fileId) {
             this.driveConfig.lastSync = null;
+            // 閲覧用ドキュメントは同期先JSONごとに作り直す
+            this.driveConfig.docFileId = '';
         }
         this.driveConfig.fileId = fileId;
         this.driveConfig.fileName = fileName;
@@ -2264,6 +2278,7 @@ class MobileOutlineWriter {
             const configToSave = {
                 fileName: this.driveConfig.fileName,
                 fileId: this.driveConfig.fileId,
+                docFileId: this.driveConfig.docFileId,
                 lastSync: this.driveConfig.lastSync,
                 syncEnabled: this.driveConfig.syncEnabled
             };
@@ -2409,6 +2424,7 @@ class MobileOutlineWriter {
         this.driveConfig.connected = false;
         this.driveConfig.userEmail = '';
         this.driveConfig.fileId = '';
+        this.driveConfig.docFileId = '';
         this.driveConfig.syncEnabled = false;
         this.tokenExpiresAt = null;
 
@@ -2793,9 +2809,20 @@ class MobileOutlineWriter {
             if (response.ok) {
                 this.markSyncedWithTarget(dataToUpload.timestamp, uploadedHash);
 
+                // 閲覧用ドキュメントの失敗はJSON同期の成否に影響させない
+                let docError = null;
+                try {
+                    await this.uploadReadableDoc(dataToUpload.data.items);
+                } catch (e) {
+                    docError = e;
+                    console.error('閲覧用ドキュメントの保存エラー:', e);
+                }
+
                 this.hideSyncProgress();
                 this.updateSyncInfo();
-                this.showToast('Driveにアップロードしました');
+                this.showToast(docError
+                    ? `Driveにアップロードしました（閲覧用ドキュメントの保存に失敗: ${docError.message}）`
+                    : 'Driveにアップロードしました');
             } else {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
@@ -2804,6 +2831,47 @@ class MobileOutlineWriter {
             console.error('アップロードエラー:', error);
             this.showToast(`アップロードに失敗しました: ${error.message}`);
         }
+    }
+
+    // Claude等のDriveコネクタで読めるよう、MarkdownをGoogleドキュメントに変換して保存する
+    // （.mdや.jsonはコネクタでテキストとして読めないため）
+    async uploadReadableDoc(items) {
+        const markdown = this.generateMarkdownExport(items, 0, false) || ' ';
+        const docName = (this.driveConfig.fileName || 'OutlineWriter-data').replace(/\.json$/i, '');
+
+        if (this.driveConfig.docFileId) {
+            const url = `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.docFileId}?uploadType=media`;
+            const response = await this.driveFetch(url, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'text/markdown; charset=UTF-8' },
+                body: markdown
+            });
+            if (response.ok) return;
+            // ユーザーが削除した等で見つからない場合は作り直す
+            if (response.status !== 404) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        }
+
+        const metadata = {
+            name: docName,
+            mimeType: 'application/vnd.google-apps.document',
+            parents: ['root']
+        };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([markdown], { type: 'text/markdown' }));
+
+        const response = await this.driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            body: form
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const result = await response.json();
+        this.driveConfig.docFileId = result.id;
+        this.saveConfig();
     }
 
     // Driveからデータを取得し、現在のアウトラインに反映する（UIダイアログの有無に依存しない）
