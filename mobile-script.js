@@ -86,7 +86,6 @@ class MobileOutlineWriter {
             editor: document.getElementById('mobile-editor'),
             breadcrumb: document.getElementById('breadcrumb'),
             currentTitle: document.getElementById('current-title-mobile'),
-            isHeading: document.getElementById('is-heading-mobile'),
             currentContent: document.getElementById('current-content-mobile'),
             charCount: document.getElementById('char-count-mobile'),
             totalCharCount: document.getElementById('total-char-count-mobile'),
@@ -185,7 +184,6 @@ class MobileOutlineWriter {
             this.updateCurrentItem();
             this.updateCharCount();
         });
-        this.elements.isHeading.addEventListener('change', () => this.updateCurrentItem());
         
         // Toolbar events
         this.elements.addItemBtn.addEventListener('click', () => this.addItemAfterCurrent());
@@ -654,7 +652,6 @@ class MobileOutlineWriter {
             id: this.data.nextId++,
             title: '新しい項目',
             content: '',
-            isHeading: false,
             children: [],
             expanded: true,
             parentId: parentId,
@@ -722,7 +719,6 @@ class MobileOutlineWriter {
         this.currentItem = item;
         this.elements.currentTitle.value = item.title;
         this.elements.currentContent.value = item.content;
-        this.elements.isHeading.checked = item.isHeading;
         
         this.updateCharCount();
         this.updateActiveState();
@@ -740,7 +736,6 @@ class MobileOutlineWriter {
 
         this.currentItem.title = this.elements.currentTitle.value;
         this.currentItem.content = this.elements.currentContent.value;
-        this.currentItem.isHeading = this.elements.isHeading.checked;
 
         this.updateItemElementLight(this.currentItem);
         this.updateBreadcrumb();
@@ -749,6 +744,11 @@ class MobileOutlineWriter {
     }
 
     // サイドバーの該当項目のみを軽量に更新（全体再描画を避ける）
+    // 見出し判定: 子要素を持つ項目を見出しとみなす（手動フラグは廃止）
+    isHeading(item) {
+        return Array.isArray(item.children) && item.children.length > 0;
+    }
+
     updateItemElementLight(item) {
         const contentEl = document.querySelector(`.outline-item-content-mobile[data-id="${item.id}"]`);
         if (!contentEl) return;
@@ -756,9 +756,8 @@ class MobileOutlineWriter {
         const titleEl = contentEl.querySelector('.outline-title-mobile');
         if (titleEl) {
             titleEl.textContent = item.title || '無題';
-            titleEl.classList.toggle('heading', !!item.isHeading);
+            titleEl.classList.toggle('heading', this.isHeading(item));
         }
-        contentEl.classList.toggle('heading', !!item.isHeading);
     }
 
     updateActiveState() {
@@ -824,10 +823,6 @@ class MobileOutlineWriter {
         contentDiv.className = 'outline-item-content-mobile';
         contentDiv.setAttribute('data-id', item.id);
         
-        if (item.isHeading) {
-            contentDiv.classList.add('heading');
-        }
-
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'outline-toggle-mobile';
         toggleBtn.textContent = item.children.length > 0 ? (item.expanded ? '▼' : '▶') : '•';
@@ -838,7 +833,7 @@ class MobileOutlineWriter {
 
         const titleSpan = document.createElement('span');
         titleSpan.className = 'outline-title-mobile';
-        if (item.isHeading) {
+        if (this.isHeading(item)) {
             titleSpan.classList.add('heading');
         }
         titleSpan.textContent = item.title || '無題';
@@ -1021,7 +1016,6 @@ class MobileOutlineWriter {
             id: this.data.nextId++,
             title: '新しい項目',
             content: '',
-            isHeading: false,
             children: [],
             expanded: true,
             parentId: parent ? parent.id : null,
@@ -1101,7 +1095,6 @@ class MobileOutlineWriter {
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
-        this.elements.isHeading.checked = false;
         
         this.updateHierarchyPaths();
         this.renderOutline();
@@ -1210,7 +1203,6 @@ class MobileOutlineWriter {
             this.currentItem = null;
             this.elements.currentTitle.value = '';
             this.elements.currentContent.value = '';
-            this.elements.isHeading.checked = false;
             this.renderOutline();
             this.updateCharCount();
             this.updateButtonStates();
@@ -1229,7 +1221,6 @@ class MobileOutlineWriter {
             this.currentItem = null;
             this.elements.currentTitle.value = '';
             this.elements.currentContent.value = '';
-            this.elements.isHeading.checked = false;
             this.renderOutline();
             this.updateCharCount();
             this.updateButtonStates();
@@ -1291,7 +1282,6 @@ class MobileOutlineWriter {
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
-                this.elements.isHeading.checked = false;
             }
             this.loadBackups();
         } catch (e) {
@@ -1323,7 +1313,7 @@ class MobileOutlineWriter {
                 if (typeof item.content !== 'string') {
                     item.content = item.content != null ? String(item.content) : '';
                 }
-                item.isHeading = !!item.isHeading;
+                delete item.isHeading; // 旧データの手動フラグは破棄（見出しは子要素の有無で自動判定）
                 item.expanded = item.expanded !== false;
                 if (!Array.isArray(item.children)) {
                     item.children = [];
@@ -1373,7 +1363,6 @@ class MobileOutlineWriter {
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
-                this.elements.isHeading.checked = false;
                 this.updateHierarchyPaths();
                 this.renderOutline();
                 this.updateCharCount();
@@ -1409,7 +1398,6 @@ class MobileOutlineWriter {
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
-                this.elements.isHeading.checked = false;
                 this.updateHierarchyPaths();
                 this.renderOutline();
                 this.updateCharCount();
@@ -1527,13 +1515,10 @@ class MobileOutlineWriter {
                     
                     if (nextHeadingMatch || nextListMatch) {
                         const title = nextHeadingMatch ? nextHeadingMatch[2] : nextListMatch[2];
-                        const isHeading = !!nextHeadingMatch;
-                        
                         const item = {
                             id: data.nextId++,
                             title: title,
                             content: '',
-                            isHeading: isHeading,
                             children: [],
                             expanded: true,
                             parentId: null,
@@ -1586,7 +1571,7 @@ class MobileOutlineWriter {
                     id: data.nextId++,
                     title: title,
                     content: '',
-                    isHeading: true,
+                    _fromHash: true,
                     children: [],
                     expanded: true,
                     parentId: null,
@@ -1616,7 +1601,6 @@ class MobileOutlineWriter {
                     id: data.nextId++,
                     title: title,
                     content: '',
-                    isHeading: false,
                     children: [],
                     expanded: true,
                     parentId: null,
@@ -1625,7 +1609,7 @@ class MobileOutlineWriter {
                 };
 
                 // リスト項目の階層判定を改善
-                while (stack.length > 1 && !stack[stack.length - 1].isHeading) {
+                while (stack.length > 1 && !stack[stack.length - 1]._fromHash) {
                     const lastItem = stack[stack.length - 1];
                     const lastIndent = lastItem._tempIndent || 0;
                     if (lastIndent >= indentSpaces) {
@@ -1664,6 +1648,7 @@ class MobileOutlineWriter {
     cleanupTempData(items) {
         items.forEach(item => {
             delete item._tempIndent;
+            delete item._fromHash;
             if (item.children) {
                 this.cleanupTempData(item.children);
             }
@@ -1729,7 +1714,7 @@ class MobileOutlineWriter {
         items.forEach(item => {
             result += `<!-- hierarchy: ${item.hierarchyPath} level: ${item.level} -->\n`;
             
-            if (item.isHeading) {
+            if (this.isHeading(item)) {
                 const headingLevel = Math.min(level + 1, 6);
                 const hashes = '#'.repeat(headingLevel);
                 result += `${hashes} ${item.title}\n\n`;
@@ -1772,7 +1757,7 @@ class MobileOutlineWriter {
         let result = '';
         items.forEach(item => {
             const indent = '  '.repeat(level);
-            const prefix = item.isHeading ? '■ ' : '・ ';
+            const prefix = this.isHeading(item) ? '■ ' : '・ ';
             result += `${indent}${prefix}${item.title}\n`;
             if (item.content.trim()) {
                 const contentLines = item.content.split('\n');
@@ -1853,7 +1838,6 @@ class MobileOutlineWriter {
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
-        this.elements.isHeading.checked = false;
         this.renderOutline();
         this.updateCharCount();
         this.updateButtonStates();
@@ -2128,6 +2112,11 @@ class MobileOutlineWriter {
         this.updateAuthStatus();
         this.updateDriveStatus();
         this.showToast('認証の有効期限が切れました。再ログインしてください');
+        // 同期ダイアログが開いていれば閉じ、ログインボタンのあるDrive設定ダイアログへ遷移する
+        this.closeSyncDialog();
+        if (this.elements.driveSetupDialog.classList.contains('hidden')) {
+            this.openDriveSetupDialog();
+        }
     }
 
     // Drive REST API呼び出し用の共通ヘルパー（fetchのラッパー）
@@ -2575,7 +2564,6 @@ class MobileOutlineWriter {
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
-        this.elements.isHeading.checked = false;
         this.updateHierarchyPaths();
         this.renderOutline();
         this.updateCharCount();

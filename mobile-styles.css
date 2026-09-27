@@ -283,11 +283,6 @@ body {
     display: none;
 }
 
-.item-controls-mobile {
-    display: flex;
-    align-items: center;
-}
-
 .checkbox-label {
     display: flex;
     align-items: center;
