@@ -29,6 +29,7 @@ OutlineWriter Mobileは、階層的なアウトライン機能を持つ、原稿
 | `manifest.json` | PWAマニフェスト |
 | `sw.js` | Service Worker（アプリシェルのキャッシュ） |
 | `icon-192.png` / `icon-512.png` | PWAアイコン |
+| `tests/` / `playwright.config.js` / `package.json` | 自動テスト（開発用。アプリの動作には不要） |
 
 ## システム要件
 
@@ -142,6 +143,27 @@ APIキーは不要です。認証には Google Identity Services（GIS）を使�
 3. 「同期」ダイアログからアップロード/ダウンロード
 4. 「自動同期」を有効にすると、起動時にサイレントログイン＋同期を試行します
 
+### 同期先ファイルと表示中の原稿
+アプリは次の2つを区別して表示します。
+
+| 表示名 | 意味 | 表示場所 |
+|---|---|---|
+| **同期先ファイル** | アップロード/ダウンロードの対象となるDriveファイル | メニューの「Drive同期」、Drive設定ダイアログ、同期ダイアログ |
+| **表示中の原稿** | いまエディタにある原稿がどこから来たか（例: `Drive: A.json`、`ファイル: foo.md`、`不明（記録なし）`） | Drive設定ダイアログ、同期ダイアログ |
+
+- 既存ファイルを選択しても、ダウンロードするまで表示中の原稿は入れ替わりません。両者が異なる間は「⚠ 表示中の原稿は同期先ファイルから読み込んだものではありません」と表示されます
+- Drive設定の「新規作成時のファイル名」は新規作成専用の入力欄です。書き換えても同期先ファイルの名前は変わりません
+- Drive側でファイル名を変更した場合、次にDriveへ問い合わせたときに表示が更新されます
+
+### 上書き前の確認
+| 操作 | 確認が出る条件 |
+|---|---|
+| ローカル → Drive（アップロード） | 表示中の原稿が同期先ファイル由来でない／この端末に同期先ファイルとの同期記録がない／前回同期後にDrive側が更新されている |
+| Drive → ローカル（ダウンロード） | 表示中の原稿が同期先ファイル由来でない／前回同期後にローカルで編集している |
+| 起動時の自動同期 | ローカルに未アップロードの編集があり、かつDrive側も更新されている場合（Drive側に変更がなければ同期をスキップ） |
+
+同期記録（最終同期時刻と、同期時点の原稿内容の指紋）は同期先ファイルごとに保持するため、同期先を切り替えると「未同期」として扱われます。
+
 ### 注意事項
 - **http(s) 配信が必須**: OAuth の仕様上、`file://` から開いた場合Drive同期は動作しません。OAuthクライアントに登録したオリジン（例: `https://yoursite.com` や `http://localhost:8000`）から配信してください
 - **トークン有効期限**: アクセストークンは約1時間で失効します。失効後は再ログインが必要です
@@ -162,6 +184,8 @@ APIキーは不要です。認証には Google Identity Services（GIS）を使�
 | `outlinewriter-backups` | バックアップデータ（最大10件） |
 | `outlinewriter-drive-config` | Google Drive連携設定（ファイル名・ファイルID・同期設定など） |
 | `outlinewriter-data-timestamp` | ローカルデータの最終保存日時 |
+| `outlinewriter-data-source` | 表示中の原稿の出どころ（Driveファイル/読み込んだファイル） |
+| `outlinewriter-drive-sync-state` | 同期先ファイルごとの同期記録（ファイルID・最終同期時刻・内容の指紋） |
 | `toolbar-visible` | 下部ツールバーの表示状態 |
 
 ### データ形式
@@ -226,3 +250,13 @@ APIキーは不要です。認証には Google Identity Services（GIS）を使�
 - **ストレージ**: Browser LocalStorage ＋ Google Drive（任意）
 - **認証**: Google Identity Services（OAuth 2.0 / `drive.file` スコープ）
 - **対応ブラウザ**: Chrome 80+, Firefox 75+, Safari 13+, Edge 80+
+
+## 開発者向け: 自動テスト
+
+Google Drive同期まわりの動作を Playwright（Chromium）で確認するテストがあります。Google のログイン（GIS）と Drive API はテスト内のフェイクに差し替えるため、Googleアカウントやネットワーク接続は不要です（本物のGoogleとの結合は確認対象外）。
+
+```
+npm install
+npx playwright install chromium   # 初回のみ（ブラウザ未導入の場合）
+npm test
+```

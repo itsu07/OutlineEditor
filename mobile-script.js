@@ -1,3 +1,6 @@
+// 同期判定で許容する時刻のずれ（自動保存の遅延や端末とDriveの時計差を吸収）
+const SYNC_TOLERANCE_MS = 5000;
+
 class MobileOutlineWriter {
     constructor() {
         this.data = {
@@ -16,6 +19,10 @@ class MobileOutlineWriter {
         this.autoSaveTimer = null;
         this.historyTimer = null;
         this.toastTimer = null;
+
+        // 表示中の原稿の出どころ（同期先ファイル driveConfig.fileId とは別概念）
+        // null = 不明 / { kind: 'drive', fileId, fileName } / { kind: 'file', name }
+        this.dataSource = null;
         
         // Google Drive integration
         this.driveConfig = {
@@ -113,6 +120,7 @@ class MobileOutlineWriter {
             driveSetupBtn: document.getElementById('drive-setup-mobile'),
             driveSyncBtn: document.getElementById('drive-sync-mobile'),
             driveStatus: document.querySelector('.drive-status'),
+            driveTargetLabel: document.getElementById('drive-target-label'),
             
             // Local files
             saveBtn: document.getElementById('save-mobile'),
@@ -134,6 +142,8 @@ class MobileOutlineWriter {
             driveFileName: document.getElementById('drive-file-name'),
             selectedFileName: document.getElementById('selected-file-name'),
             selectedFileModified: document.getElementById('selected-file-modified'),
+            setupDataSource: document.getElementById('setup-data-source'),
+            setupSourceWarning: document.getElementById('setup-source-warning'),
             selectDriveFile: document.getElementById('select-drive-file'),
             createDriveFile: document.getElementById('create-drive-file'),
             autoSync: document.getElementById('auto-sync'),
@@ -143,6 +153,9 @@ class MobileOutlineWriter {
             // Sync dialog
             syncDialog: document.getElementById('sync-dialog'),
             closeSyncDialog: document.getElementById('close-sync-dialog'),
+            syncTargetName: document.getElementById('sync-target-name'),
+            syncDataSource: document.getElementById('sync-data-source'),
+            syncSourceWarning: document.getElementById('sync-source-warning'),
             localTimestamp: document.getElementById('local-timestamp'),
             driveTimestamp: document.getElementById('drive-timestamp'),
             lastSyncTimestamp: document.getElementById('last-sync-timestamp'),
@@ -1178,7 +1191,8 @@ class MobileOutlineWriter {
     saveToHistory() {
         clearTimeout(this.historyTimer);
 
-        const currentState = JSON.parse(JSON.stringify(this.data));
+        // 原稿の出どころも一緒に記録し、Undo/Redoで中身と表示が食い違わないようにする
+        const currentState = JSON.parse(JSON.stringify({ data: this.data, source: this.dataSource }));
         
         if (this.historyIndex < this.history.length - 1) {
             this.history.splice(this.historyIndex + 1);
@@ -1199,7 +1213,7 @@ class MobileOutlineWriter {
         clearTimeout(this.historyTimer);
         if (this.historyIndex > 0) {
             this.historyIndex--;
-            this.data = JSON.parse(JSON.stringify(this.history[this.historyIndex]));
+            this.applyHistoryEntry(this.history[this.historyIndex]);
             this.currentItem = null;
             this.elements.currentTitle.value = '';
             this.elements.currentContent.value = '';
@@ -1217,7 +1231,7 @@ class MobileOutlineWriter {
         clearTimeout(this.historyTimer);
         if (this.historyIndex < this.history.length - 1) {
             this.historyIndex++;
-            this.data = JSON.parse(JSON.stringify(this.history[this.historyIndex]));
+            this.applyHistoryEntry(this.history[this.historyIndex]);
             this.currentItem = null;
             this.elements.currentTitle.value = '';
             this.elements.currentContent.value = '';
@@ -1229,6 +1243,12 @@ class MobileOutlineWriter {
             this.scheduleAutoSave();
             this.showToast('やり直しました');
         }
+    }
+
+    applyHistoryEntry(entry) {
+        const snapshot = JSON.parse(JSON.stringify(entry));
+        this.data = snapshot.data;
+        this.setDataSource(snapshot.source);
     }
 
     updateUndoRedoButtons() {
@@ -1263,15 +1283,72 @@ class MobileOutlineWriter {
     // 変更が落ち着いてから静かにローカル保存する（トースト表示なし）
     scheduleAutoSave() {
         clearTimeout(this.autoSaveTimer);
-        this.autoSaveTimer = setTimeout(() => {
-            try {
-                localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
-                localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
-                localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
-            } catch (e) {
-                console.error('自動保存に失敗しました:', e);
+        this.autoSaveTimer = setTimeout(() => this.writeAutoSave(), 800);
+    }
+
+    // 保留中の自動保存があれば即座に書き出す（同期判定の前にローカル更新時刻を確定させる）
+    flushAutoSave() {
+        if (this.autoSaveTimer === null) return;
+        clearTimeout(this.autoSaveTimer);
+        this.writeAutoSave();
+    }
+
+    writeAutoSave() {
+        this.autoSaveTimer = null;
+        try {
+            localStorage.setItem('outlinewriter-data', JSON.stringify(this.data));
+            localStorage.setItem('outlinewriter-data-timestamp', new Date().toLocaleString('ja-JP'));
+            localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
+        } catch (e) {
+            console.error('自動保存に失敗しました:', e);
+        }
+    }
+
+    // ===== 表示中の原稿の出どころ =====
+    setDataSource(source) {
+        this.dataSource = source || null;
+        try {
+            if (this.dataSource) {
+                localStorage.setItem('outlinewriter-data-source', JSON.stringify(this.dataSource));
+            } else {
+                localStorage.removeItem('outlinewriter-data-source');
             }
-        }, 800);
+        } catch (e) {
+            console.error('原稿の出どころの保存に失敗しました:', e);
+        }
+        this.updateSourceDisplays();
+    }
+
+    loadDataSource() {
+        try {
+            const saved = localStorage.getItem('outlinewriter-data-source');
+            this.dataSource = saved ? JSON.parse(saved) : null;
+        } catch (e) {
+            this.dataSource = null;
+        }
+    }
+
+    describeDataSource(source = this.dataSource) {
+        if (!source) return '不明（記録なし）';
+        if (source.kind === 'drive') return `Drive: ${source.fileName || source.fileId}`;
+        if (source.kind === 'file') return `ファイル: ${source.name}`;
+        return '不明（記録なし）';
+    }
+
+    // 表示中の原稿が現在の同期先ファイル由来か
+    isSourceSameAsTarget() {
+        return !!(this.dataSource && this.dataSource.kind === 'drive' &&
+            this.driveConfig.fileId && this.dataSource.fileId === this.driveConfig.fileId);
+    }
+
+    updateSourceDisplays() {
+        if (!this.elements) return;
+        const label = this.describeDataSource();
+        const mismatch = !!this.driveConfig.fileId && !this.isSourceSameAsTarget();
+        if (this.elements.setupDataSource) this.elements.setupDataSource.textContent = label;
+        if (this.elements.syncDataSource) this.elements.syncDataSource.textContent = label;
+        if (this.elements.setupSourceWarning) this.elements.setupSourceWarning.classList.toggle('hidden', !mismatch);
+        if (this.elements.syncSourceWarning) this.elements.syncSourceWarning.classList.toggle('hidden', !mismatch);
     }
 
     loadData() {
@@ -1283,6 +1360,8 @@ class MobileOutlineWriter {
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
             }
+            this.loadDataSource();
+            this.updateSourceDisplays();
             this.loadBackups();
         } catch (e) {
             this.showToast('読み込みに失敗しました');
@@ -1360,6 +1439,7 @@ class MobileOutlineWriter {
                 }
                 
                 this.data = this.normalizeData(data);
+                this.setDataSource({ kind: 'file', name: file.name });
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
@@ -1368,6 +1448,7 @@ class MobileOutlineWriter {
                 this.updateCharCount();
                 this.updateButtonStates();
                 this.updateBreadcrumb();
+                this.saveToHistory();
                 this.scheduleAutoSave();
                 this.showToast('ファイルを読み込みました');
             } catch (error) {
@@ -1395,6 +1476,7 @@ class MobileOutlineWriter {
                 const convertedData = this.parseMarkdownToOutlineWriter(markdownContent);
                 
                 this.data = this.normalizeData(convertedData);
+                this.setDataSource({ kind: 'file', name: file.name });
                 this.currentItem = null;
                 this.elements.currentTitle.value = '';
                 this.elements.currentContent.value = '';
@@ -1403,6 +1485,7 @@ class MobileOutlineWriter {
                 this.updateCharCount();
                 this.updateButtonStates();
                 this.updateBreadcrumb();
+                this.saveToHistory();
                 this.scheduleAutoSave();
                 this.showToast('Markdownファイルを読み込みました');
             } catch (error) {
@@ -1779,7 +1862,8 @@ class MobileOutlineWriter {
         const timestamp = new Date().toLocaleString('ja-JP');
         const backup = {
             timestamp: timestamp,
-            data: JSON.parse(JSON.stringify(this.data))
+            data: JSON.parse(JSON.stringify(this.data)),
+            source: JSON.parse(JSON.stringify(this.dataSource))
         };
         
         this.backups.push(backup);
@@ -1834,7 +1918,10 @@ class MobileOutlineWriter {
         const ok = await this.showConfirmDialog('現在のデータは失われます。本当に復元しますか？');
         if (!ok) return;
         
-        this.data = this.normalizeData(JSON.parse(JSON.stringify(this.backups[index].data)));
+        const backup = this.backups[index];
+        this.data = this.normalizeData(JSON.parse(JSON.stringify(backup.data)));
+        // 出どころを記録していない旧バックアップは「不明」として扱う
+        this.setDataSource(backup.source ? JSON.parse(JSON.stringify(backup.source)) : null);
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
@@ -1871,7 +1958,8 @@ class MobileOutlineWriter {
         const timestamp = new Date().toLocaleString('ja-JP');
         const backup = {
             timestamp: `自動バックアップ - ${timestamp}`,
-            data: JSON.parse(JSON.stringify(this.data))
+            data: JSON.parse(JSON.stringify(this.data)),
+            source: JSON.parse(JSON.stringify(this.dataSource))
         };
         
         this.backups.push(backup);
@@ -2057,11 +2145,117 @@ class MobileOutlineWriter {
                 this.driveConfig.fileId = savedConfig.fileId || this.driveConfig.fileId;
                 this.driveConfig.lastSync = savedConfig.lastSync || this.driveConfig.lastSync;
                 this.driveConfig.syncEnabled = savedConfig.syncEnabled || false;
-                this.updateDriveStatus();
             }
+
+            // 旧形式（ファイルを区別しない同期時刻）を現在の同期先ファイルの記録として引き継ぐ
+            const legacySynced = localStorage.getItem('outlinewriter-drive-synced-iso');
+            if (legacySynced !== null) {
+                if (this.driveConfig.fileId && !localStorage.getItem('outlinewriter-drive-sync-state')) {
+                    this.setSyncState(this.driveConfig.fileId, legacySynced);
+                }
+                localStorage.removeItem('outlinewriter-drive-synced-iso');
+            }
+            this.updateDriveStatus();
         } catch (e) {
             console.error('Drive設定の読み込みに失敗しました:', e);
         }
+    }
+
+    // 最終同期時刻はファイルIDとセットで保持する（同期先を切り替えたら「未同期」とみなす）
+    // dataHash は同期時点の原稿内容の指紋。ローカル編集の有無を時刻ではなく内容で判定するために使う
+    setSyncState(fileId, syncedIso, dataHash = null) {
+        try {
+            localStorage.setItem('outlinewriter-drive-sync-state', JSON.stringify({ fileId, syncedIso, dataHash }));
+        } catch (e) {
+            console.error('同期状態の保存に失敗しました:', e);
+        }
+    }
+
+    getSyncState(fileId) {
+        try {
+            const state = JSON.parse(localStorage.getItem('outlinewriter-drive-sync-state') || 'null');
+            if (state && fileId && state.fileId === fileId && state.syncedIso) {
+                return state;
+            }
+        } catch (e) {
+            console.error('同期状態の読み込みに失敗しました:', e);
+        }
+        return null;
+    }
+
+    getSyncedIsoFor(fileId) {
+        const state = this.getSyncState(fileId);
+        return state ? state.syncedIso : null;
+    }
+
+    // 原稿内容（タイトル・本文・構造）の指紋。展開状態など表示だけの違いは含めない
+    contentFingerprint(data = this.data) {
+        const strip = (items) => (items || []).map(item => [item.title, item.content, strip(item.children)]);
+        const text = JSON.stringify(strip(data.items));
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < text.length; i++) {
+            hash ^= text.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193);
+        }
+        return (hash >>> 0).toString(16) + ':' + text.length;
+    }
+
+    // 表示中の原稿が同期先ファイルとの最後の同期以降に編集されているか
+    isEditedSinceSync() {
+        if (!this.isSourceSameAsTarget()) return true;
+        const state = this.getSyncState(this.driveConfig.fileId);
+        if (!state) return true;
+        if (state.dataHash) {
+            return this.contentFingerprint() !== state.dataHash;
+        }
+        // 旧形式の記録（内容の指紋なし）は時刻で判定する
+        const localIso = localStorage.getItem('outlinewriter-data-timestamp-iso');
+        return !localIso || (new Date(localIso) - new Date(state.syncedIso) > SYNC_TOLERANCE_MS);
+    }
+
+    // Driveと内容が一致した（アップロード/ダウンロード/新規作成に成功した）ことを記録する
+    markSyncedWithTarget(timestampLabel, dataHash = this.contentFingerprint()) {
+        const nowIso = new Date().toISOString();
+        this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
+        this.saveConfig();
+
+        localStorage.setItem('outlinewriter-data-timestamp', timestampLabel || new Date().toLocaleString('ja-JP'));
+        localStorage.setItem('outlinewriter-data-timestamp-iso', nowIso);
+        this.setSyncState(this.driveConfig.fileId, nowIso, dataHash);
+        this.setDataSource({ kind: 'drive', fileId: this.driveConfig.fileId, fileName: this.driveConfig.fileName });
+    }
+
+    // 同期先ファイルが切り替わったときに、前のファイルの同期情報を引き継がないようにする
+    setDriveTarget(fileId, fileName) {
+        if (fileId !== this.driveConfig.fileId) {
+            this.driveConfig.lastSync = null;
+        }
+        this.driveConfig.fileId = fileId;
+        this.driveConfig.fileName = fileName;
+    }
+
+    // Drive側で名前が変わっていれば表示用の名前を更新する
+    refreshTargetName(name) {
+        if (!name || name === this.driveConfig.fileName) return;
+        this.driveConfig.fileName = name;
+        if (this.isSourceSameAsTarget()) {
+            this.setDataSource(Object.assign({}, this.dataSource, { fileName: name }));
+        }
+        this.saveConfig();
+        this.updateFileInfo();
+        this.updateDriveStatus();
+    }
+
+    // Driveファイルのメタデータ（更新日時・名前）を取得する
+    async fetchTargetMetadata() {
+        const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?fields=modifiedTime,name`;
+        const response = await this.driveFetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const meta = await response.json();
+        this.refreshTargetName(meta.name);
+        return meta;
     }
 
     saveConfig() {
@@ -2260,6 +2454,20 @@ class MobileOutlineWriter {
             statusElement.classList.remove('connected');
             syncButton.disabled = true;
         }
+
+        if (this.elements.syncTargetName) {
+            this.elements.syncTargetName.textContent = this.driveConfig.fileId
+                ? (this.driveConfig.fileName || '(名前不明)')
+                : '未設定';
+        }
+        if (this.elements.driveTargetLabel) {
+            this.elements.driveTargetLabel.textContent = this.driveConfig.fileId
+                ? `同期先: ${this.driveConfig.fileName || '(名前不明)'}`
+                : '同期先: 未設定';
+        }
+        // ファイルの選択・作成直後にも「設定完了」を押せるようにする
+        this.updateSaveButtonState();
+        this.updateSourceDisplays();
     }
 
     updateSaveButtonState() {
@@ -2282,7 +2490,8 @@ class MobileOutlineWriter {
         }
 
         try {
-            this.elements.driveFileName.value = this.driveConfig.fileName || 'OutlineWriter-data.json';
+            // 入力欄は新規作成専用。現在の同期先の名前は入れない（別ファイルと誤認させないため）
+            this.elements.driveFileName.value = 'OutlineWriter-data.json';
             this.elements.autoSync.checked = this.driveConfig.syncEnabled || false;
 
             this.updateAuthStatus();
@@ -2336,11 +2545,12 @@ class MobileOutlineWriter {
     updateFileInfo() {
         if (this.driveConfig.fileId) {
             this.elements.selectedFileName.textContent = this.driveConfig.fileName || '設定済み';
-            this.elements.selectedFileModified.textContent = this.driveConfig.lastSync || '不明';
+            this.elements.selectedFileModified.textContent = this.driveConfig.lastSync || '未同期';
         } else {
             this.elements.selectedFileName.textContent = '未選択';
             this.elements.selectedFileModified.textContent = '-';
         }
+        this.updateSourceDisplays();
     }
 
     // ファイル操作
@@ -2381,12 +2591,15 @@ class MobileOutlineWriter {
 
             if (index !== null && index >= 0 && index < files.length) {
                 const selectedFile = files[index];
-                this.driveConfig.fileId = selectedFile.id;
-                this.driveConfig.fileName = selectedFile.name;
+                this.setDriveTarget(selectedFile.id, selectedFile.name);
 
                 this.updateFileInfo();
                 this.updateDriveStatus();
-                this.showToast(`ファイル「${selectedFile.name}」を選択しました`);
+                if (this.isSourceSameAsTarget()) {
+                    this.showToast(`ファイル「${selectedFile.name}」を選択しました`);
+                } else {
+                    this.showToast(`同期先を「${selectedFile.name}」にしました。表示中の原稿はDriveからダウンロードするまで入れ替わりません`, 6000);
+                }
             }
         } catch (error) {
             console.error('ファイル選択エラー:', error);
@@ -2413,6 +2626,7 @@ class MobileOutlineWriter {
         try {
             // 初期データを作成
             const initialData = this.createExportData();
+            const createdHash = this.contentFingerprint(initialData.data);
 
             const fileMetadata = {
                 name: fileName,
@@ -2430,8 +2644,9 @@ class MobileOutlineWriter {
 
             if (response.ok) {
                 const result = await response.json();
-                this.driveConfig.fileId = result.id;
-                this.driveConfig.fileName = fileName;
+                this.setDriveTarget(result.id, fileName);
+                // 表示中の原稿をそのまま書き込んだので、このファイルと同期済みとして扱う
+                this.markSyncedWithTarget(initialData.timestamp, createdHash);
 
                 this.updateFileInfo();
                 this.updateDriveStatus();
@@ -2451,7 +2666,7 @@ class MobileOutlineWriter {
             return;
         }
 
-        this.driveConfig.fileName = this.elements.driveFileName.value.trim();
+        // fileName は選択/作成時に確定済み。入力欄（新規作成用）の値で上書きしない
         this.driveConfig.syncEnabled = this.elements.autoSync.checked;
 
         this.saveConfig();
@@ -2466,6 +2681,7 @@ class MobileOutlineWriter {
 
         this.elements.localTimestamp.textContent = localTimestamp;
         this.elements.lastSyncTimestamp.textContent = lastSync;
+        this.updateDriveStatus();
 
         // Drive timestamp will be updated when we fetch from Drive
         this.elements.driveTimestamp.textContent = '取得中...';
@@ -2483,20 +2699,46 @@ class MobileOutlineWriter {
         }
 
         try {
-            const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?fields=modifiedTime`;
-            const response = await this.driveFetch(url);
-
-            if (response.ok) {
-                const result = await response.json();
-                const modifiedTime = new Date(result.modifiedTime).toLocaleString('ja-JP');
-                this.elements.driveTimestamp.textContent = modifiedTime;
-            } else {
-                this.elements.driveTimestamp.textContent = 'エラー';
-            }
+            const meta = await this.fetchTargetMetadata();
+            this.elements.driveTimestamp.textContent = new Date(meta.modifiedTime).toLocaleString('ja-JP');
         } catch (error) {
             console.error('タイムスタンプ取得エラー:', error);
             this.elements.driveTimestamp.textContent = 'エラー';
         }
+    }
+
+    // アップロード前のリスク（別原稿の上書き・Drive側の未取り込み変更）を列挙する
+    getUploadRisks(meta) {
+        const reasons = [];
+        const target = this.driveConfig.fileName || '同期先ファイル';
+        const driveTimeLabel = new Date(meta.modifiedTime).toLocaleString('ja-JP');
+
+        if (!this.isSourceSameAsTarget()) {
+            reasons.push(`表示中の原稿（${this.describeDataSource()}）は「${target}」から読み込んだものではありません。別の原稿を上書きするおそれがあります。`);
+        }
+
+        const syncedIso = this.getSyncedIsoFor(this.driveConfig.fileId);
+        if (!syncedIso) {
+            reasons.push(`この端末には「${target}」との同期記録がありません（Drive更新: ${driveTimeLabel}）。`);
+        } else if (new Date(meta.modifiedTime) - new Date(syncedIso) > SYNC_TOLERANCE_MS) {
+            reasons.push(`「${target}」は前回の同期後にDrive側で更新されています（Drive更新: ${driveTimeLabel}）。`);
+        }
+        return reasons;
+    }
+
+    // Driveの内容で置き換える前のリスク（ローカルの未アップロード編集・別原稿）を返す
+    getLocalOverwriteRisk() {
+        if (!this.data.items.length) return null;
+
+        const target = this.driveConfig.fileName || '同期先ファイル';
+        if (!this.isSourceSameAsTarget()) {
+            return `表示中の原稿（${this.describeDataSource()}）は「${target}」から読み込んだものではありません。`;
+        }
+
+        if (this.isEditedSinceSync()) {
+            return 'ローカルに、まだDriveへアップロードしていない編集があります。';
+        }
+        return null;
     }
 
     async uploadToDrive() {
@@ -2509,10 +2751,35 @@ class MobileOutlineWriter {
             return;
         }
 
+        let meta;
+        try {
+            meta = await this.fetchTargetMetadata();
+        } catch (error) {
+            console.error('Driveファイルの確認エラー:', error);
+            this.showToast(`Driveファイルの確認に失敗しました: ${error.message}`);
+            return;
+        }
+
+        const reasons = this.getUploadRisks(meta);
+        if (reasons.length > 0) {
+            const target = this.driveConfig.fileName || '同期先ファイル';
+            const ok = await this.showConfirmDialog(
+                `${reasons.join('\n\n')}\n\nDriveの「${target}」を表示中の原稿で上書きしますか？`,
+                { okLabel: '上書きする', cancelLabel: 'キャンセル' }
+            );
+            if (!ok) {
+                this.showToast('アップロードを中止しました');
+                return;
+            }
+        }
+
         this.showSyncProgress();
 
         try {
             const dataToUpload = this.createExportData();
+            // アップロード中に入力された分を「同期済み」と誤認しないよう、送信内容の指紋を先に取る
+            const uploadedHash = this.contentFingerprint(dataToUpload.data);
+            const body = JSON.stringify(dataToUpload, null, 2);
 
             const url = `https://www.googleapis.com/upload/drive/v3/files/${this.driveConfig.fileId}?uploadType=media`;
             const response = await this.driveFetch(url, {
@@ -2520,17 +2787,11 @@ class MobileOutlineWriter {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(dataToUpload, null, 2)
+                body
             });
 
             if (response.ok) {
-                this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
-                this.saveConfig();
-
-                // ローカルタイムスタンプも更新
-                localStorage.setItem('outlinewriter-data-timestamp', dataToUpload.timestamp);
-                localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
-                localStorage.setItem('outlinewriter-drive-synced-iso', new Date().toISOString());
+                this.markSyncedWithTarget(dataToUpload.timestamp, uploadedHash);
 
                 this.hideSyncProgress();
                 this.updateSyncInfo();
@@ -2561,6 +2822,8 @@ class MobileOutlineWriter {
         }
 
         this.data = this.normalizeData(driveData.data);
+        // 出どころを先に確定させてから履歴に記録する
+        this.markSyncedWithTarget(driveData.timestamp);
         this.currentItem = null;
         this.elements.currentTitle.value = '';
         this.elements.currentContent.value = '';
@@ -2571,14 +2834,6 @@ class MobileOutlineWriter {
         this.updateBreadcrumb();
         this.saveToHistory();
         this.scheduleAutoSave();
-
-        this.driveConfig.lastSync = new Date().toLocaleString('ja-JP');
-        this.saveConfig();
-
-        // ローカルタイムスタンプを更新
-        localStorage.setItem('outlinewriter-data-timestamp', driveData.timestamp || new Date().toLocaleString('ja-JP'));
-        localStorage.setItem('outlinewriter-data-timestamp-iso', new Date().toISOString());
-        localStorage.setItem('outlinewriter-drive-synced-iso', new Date().toISOString());
     }
 
     async downloadFromDrive() {
@@ -2589,6 +2844,20 @@ class MobileOutlineWriter {
         if (!(await this.ensureToken())) {
             this.handleAuthExpired();
             return;
+        }
+
+        this.flushAutoSave();
+        const risk = this.getLocalOverwriteRisk();
+        if (risk) {
+            const target = this.driveConfig.fileName || '同期先ファイル';
+            const ok = await this.showConfirmDialog(
+                `${risk}\n\n表示中の原稿を、Driveの「${target}」の内容で置き換えますか？`,
+                { okLabel: '置き換える', cancelLabel: 'キャンセル' }
+            );
+            if (!ok) {
+                this.showToast('ダウンロードを中止しました');
+                return;
+            }
         }
 
         this.showSyncProgress();
@@ -2608,36 +2877,35 @@ class MobileOutlineWriter {
     // 起動時のサイレント認証成功後に呼ばれる自動同期
     async autoSyncFromDrive() {
         try {
-            const localIso = localStorage.getItem('outlinewriter-data-timestamp-iso');
-            const syncedIso = localStorage.getItem('outlinewriter-drive-synced-iso');
-            const localIsEmpty = !this.data.items.length;
+            this.flushAutoSave();
 
-            if (localIso && !localIsEmpty) {
-                const url = `https://www.googleapis.com/drive/v3/files/${this.driveConfig.fileId}?fields=modifiedTime`;
-                const response = await this.driveFetch(url);
-                if (response.ok) {
-                    const result = await response.json();
-                    const driveTime = new Date(result.modifiedTime);
+            if (this.data.items.length > 0) {
+                const meta = await this.fetchTargetMetadata();
+                const target = this.driveConfig.fileName || '同期先ファイル';
+                const syncedIso = this.getSyncedIsoFor(this.driveConfig.fileId);
+                const sameSource = this.isSourceSameAsTarget();
 
-                    // 前回同期時刻からの変化で判定（同期直後の自動保存や時計の微妙なズレを吸収）
-                    const TOLERANCE = 5000; // ms
-                    const editedSinceSync = !syncedIso || (new Date(localIso) - new Date(syncedIso) > TOLERANCE);
-                    const driveChangedSinceSync = !syncedIso || (driveTime - new Date(syncedIso) > TOLERANCE);
+                // 同期記録は同期先ファイルごと。別ファイル由来の原稿や記録なしは「未同期の編集あり」とみなす
+                const editedSinceSync = this.isEditedSinceSync();
+                const driveChangedSinceSync = !syncedIso ||
+                    (new Date(meta.modifiedTime) - new Date(syncedIso) > SYNC_TOLERANCE_MS);
 
-                    if (editedSinceSync) {
-                        if (!driveChangedSinceSync) {
-                            // Drive側に新しい変更はない。同期するとローカルの編集が失われるだけ
-                            this.showToast('自動同期をスキップしました（ローカルが最新）');
-                            return;
-                        }
-                        const confirmed = await this.showConfirmDialog(
-                            'ローカルのデータの方が新しい可能性があります。Driveのデータで上書きしますか？',
-                            { okLabel: '上書きする', cancelLabel: '同期しない' }
-                        );
-                        if (!confirmed) {
-                            this.showToast('自動同期をスキップしました');
-                            return;
-                        }
+                if (editedSinceSync) {
+                    if (!driveChangedSinceSync) {
+                        // Drive側に新しい変更はない。同期するとローカルの原稿が失われるだけ
+                        this.showToast('自動同期をスキップしました（Drive側に新しい変更はありません）');
+                        return;
+                    }
+                    const reason = sameSource
+                        ? 'ローカルに、まだDriveへアップロードしていない編集があります。'
+                        : `表示中の原稿（${this.describeDataSource()}）は同期先「${target}」から読み込んだものではありません。`;
+                    const confirmed = await this.showConfirmDialog(
+                        `${reason}\n\n表示中の原稿を、Driveの「${target}」の内容で置き換えますか？`,
+                        { okLabel: '置き換える', cancelLabel: '同期しない' }
+                    );
+                    if (!confirmed) {
+                        this.showToast('自動同期をスキップしました');
+                        return;
                     }
                 }
             }
