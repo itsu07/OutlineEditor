@@ -1,6 +1,9 @@
 // 同期判定で許容する時刻のずれ（自動保存の遅延や端末とDriveの時計差を吸収）
 const SYNC_TOLERANCE_MS = 5000;
 
+// 組版ツールのコラム項目記法（タイトル末尾）。組版ツール src/parser/structure.js の COLUMN_SUFFIX と同じ
+const COLUMN_SUFFIX = '{コラム}';
+
 class MobileOutlineWriter {
     constructor() {
         this.data = {
@@ -16,6 +19,7 @@ class MobileOutlineWriter {
         this.hierarchyUpdateNeeded = false;
         this.sidebarOpen = false;
         this.toolbarVisible = true;
+        this.previewMode = false;
         this.autoSaveTimer = null;
         this.historyTimer = null;
         this.toastTimer = null;
@@ -98,6 +102,11 @@ class MobileOutlineWriter {
             currentContent: document.getElementById('current-content-mobile'),
             charCount: document.getElementById('char-count-mobile'),
             totalCharCount: document.getElementById('total-char-count-mobile'),
+            insertColumnBtn: document.getElementById('insert-column-mobile'),
+            columnToggleBtn: document.getElementById('column-toggle-mobile'),
+            togglePreviewBtn: document.getElementById('toggle-preview-mobile'),
+            notationStatus: document.getElementById('notation-status-mobile'),
+            contentPreview: document.getElementById('content-preview-mobile'),
             
             // Toolbar
             bottomToolbar: document.getElementById('bottom-toolbar'),
@@ -194,11 +203,21 @@ class MobileOutlineWriter {
         this.sidebarOverlay.addEventListener('click', () => this.closeSidebar());
         
         // Editor events
-        this.elements.currentTitle.addEventListener('input', () => this.updateCurrentItem());
+        this.elements.currentTitle.addEventListener('input', () => {
+            this.updateCurrentItem();
+            // タイトル欄に直接 {コラム} と打った場合: 記法を欄から隠し、コラム表示へ切り替える
+            if (this.elements.currentTitle.value.endsWith(COLUMN_SUFFIX)) {
+                this.elements.currentTitle.value = this.displayTitle(this.currentItem);
+                this.updateNotationView();
+            }
+        });
         this.elements.currentContent.addEventListener('input', () => {
             this.updateCurrentItem();
             this.updateCharCount();
         });
+        this.elements.insertColumnBtn.addEventListener('click', () => this.insertFenceBlock('コラム'));
+        this.elements.columnToggleBtn.addEventListener('click', () => this.toggleColumnItem());
+        this.elements.togglePreviewBtn.addEventListener('click', () => this.togglePreview());
         
         // Toolbar events
         this.elements.addItemBtn.addEventListener('click', () => this.addItemAfterCurrent());
@@ -448,7 +467,7 @@ class MobileOutlineWriter {
 
         const html = results.map(item => `
             <div class="search-result-item" data-id="${item.id}">
-                <div class="search-result-title">${this.escapeHtml(item.title || '無題')}</div>
+                <div class="search-result-title">${this.escapeHtml(this.displayTitle(item) || '無題')}${this.isColumnItem(item) ? ' <span class="column-badge">コラム</span>' : ''}</div>
                 <div class="search-result-content">${this.escapeHtml(item.content.substring(0, 100))}${item.content.length > 100 ? '...' : ''}</div>
             </div>
         `).join('');
@@ -655,7 +674,7 @@ class MobileOutlineWriter {
         }
         
         const breadcrumbHtml = path.map(item =>
-            `<span class="breadcrumb-item">${this.escapeHtml(item.title || '無題')}</span>`
+            `<span class="breadcrumb-item">${this.escapeHtml(this.displayTitle(item) || '無題')}</span>`
         ).join('');
         
         this.elements.breadcrumb.innerHTML = `<span class="breadcrumb-item">ホーム</span>${breadcrumbHtml}`;
@@ -732,7 +751,7 @@ class MobileOutlineWriter {
         if (!item) return;
 
         this.currentItem = item;
-        this.elements.currentTitle.value = item.title;
+        this.elements.currentTitle.value = this.displayTitle(item);
         this.elements.currentContent.value = item.content;
         
         this.updateCharCount();
@@ -749,7 +768,7 @@ class MobileOutlineWriter {
     updateCurrentItem() {
         if (!this.currentItem) return;
 
-        this.currentItem.title = this.elements.currentTitle.value;
+        this.currentItem.title = this.composeTitle(this.elements.currentTitle.value, this.isColumnItem(this.currentItem));
         this.currentItem.content = this.elements.currentContent.value;
 
         this.updateItemElementLight(this.currentItem);
@@ -770,9 +789,10 @@ class MobileOutlineWriter {
 
         const titleEl = contentEl.querySelector('.outline-title-mobile');
         if (titleEl) {
-            titleEl.textContent = item.title || '無題';
+            titleEl.textContent = this.displayTitle(item) || '無題';
             titleEl.classList.toggle('heading', this.isHeading(item));
         }
+        this.updateColumnBadge(contentEl, item);
     }
 
     updateActiveState() {
@@ -851,10 +871,11 @@ class MobileOutlineWriter {
         if (this.isHeading(item)) {
             titleSpan.classList.add('heading');
         }
-        titleSpan.textContent = item.title || '無題';
+        titleSpan.textContent = this.displayTitle(item) || '無題';
 
         contentDiv.appendChild(toggleBtn);
         contentDiv.appendChild(titleSpan);
+        this.updateColumnBadge(contentDiv, item);
 
         contentDiv.addEventListener('click', (e) => {
             this.selectItem(item.id);
@@ -952,6 +973,9 @@ class MobileOutlineWriter {
         
         const totalCount = this.getTotalCharCount();
         this.elements.totalCharCount.textContent = totalCount;
+
+        // 本文が変わる全経路（入力・項目選択・アンドゥ等）がここを通るため、記法表示もここで更新する
+        this.updateNotationView();
     }
 
     getTotalCharCount() {
@@ -962,6 +986,294 @@ class MobileOutlineWriter {
             });
         }
         return total;
+    }
+
+    // ===== 組版ツール記法（:::コラム 等のフェンスブロック） =====
+    // 組版ツールは item.content のプレーンテキストを直接解釈するため、
+    // ここでは記法テキストを本文に書き込むだけで、データ構造は変えない。
+    // 解釈規則は組版ツール src/notation/index.js の parseBlockRange に合わせている。
+
+    // 選択範囲を :::name 〜 ::: で囲む（選択なしなら空ブロックを挿入）。タイトル部分を選択状態にする
+    insertFenceBlock(name) {
+        if (!this.currentItem) {
+            this.showToast('先に項目を選択してください');
+            return;
+        }
+        if (this.previewMode) {
+            this.togglePreview(false);
+        }
+
+        const textarea = this.elements.currentContent;
+        const value = textarea.value;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const selected = value.slice(start, end).replace(/^\n+|\n+$/g, '');
+
+        // フェンス行は行頭に単独で置く必要があるため、前後に改行を補う
+        const before = start > 0 && value[start - 1] !== '\n' ? '\n' : '';
+        const after = end < value.length && value[end] !== '\n' ? '\n' : '';
+        const titlePlaceholder = 'タイトル';
+        const header = `:::${name} ${titlePlaceholder}`;
+        const block = `${before}${header}\n${selected}\n:::${after}`;
+
+        textarea.value = value.slice(0, start) + block + value.slice(end);
+        const titleStart = start + before.length + `:::${name} `.length;
+        textarea.focus();
+        textarea.setSelectionRange(titleStart, titleStart + titlePlaceholder.length);
+
+        // プログラムからの代入では input イベントが発火しないため手動で反映し、1回のアンドゥで戻せるよう即時に履歴化する
+        this.updateCurrentItem();
+        this.updateCharCount();
+        this.saveToHistory();
+        this.showToast('タイトルは省略できます（不要なら削除）');
+    }
+
+    // ----- コラム項目（タイトル末尾 {コラム}）-----
+    // item.title には記法ごと保存し（組版ツール・Markdown出力がそのまま解釈できる）、
+    // 画面上はタイトル欄・サイドバー等で記法を隠してバッジ／トグルで示す。
+    isColumnItem(item) {
+        return typeof item?.title === 'string' && item.title.endsWith(COLUMN_SUFFIX);
+    }
+
+    displayTitle(item) {
+        const title = item?.title || '';
+        return this.isColumnItem(item) ? title.slice(0, -COLUMN_SUFFIX.length).trimEnd() : title;
+    }
+
+    // タイトル欄の値とコラム指定から item.title を組み立てる（欄に直接 {コラム} を打った場合もコラム扱い）
+    composeTitle(inputValue, column) {
+        let title = inputValue;
+        if (title.endsWith(COLUMN_SUFFIX)) {
+            column = true;
+            title = title.slice(0, -COLUMN_SUFFIX.length).trimEnd();
+        }
+        if (!column) return title;
+        return title ? `${title} ${COLUMN_SUFFIX}` : COLUMN_SUFFIX;
+    }
+
+    // 組版ツールでは深度3以上（書名・章より下）のみコラムになる。level は 0 始まりなので 2 以上
+    canBeColumn(item) {
+        return (item?.level ?? 0) >= 2;
+    }
+
+    toggleColumnItem() {
+        const item = this.currentItem;
+        if (!item) {
+            this.showToast('先に項目を選択してください');
+            return;
+        }
+        const column = !this.isColumnItem(item);
+        if (column && !this.canBeColumn(item)) {
+            this.showToast('書名・章はコラムにできません');
+            return;
+        }
+        item.title = this.composeTitle(this.displayTitle(item), column);
+        this.elements.currentTitle.value = this.displayTitle(item);
+        this.updateItemElementLight(item);
+        this.updateCharCount();
+        this.saveToHistory();
+        this.scheduleAutoSave();
+        this.showToast(column ? 'コラムにしました' : 'コラムを解除しました');
+    }
+
+    updateColumnBadge(contentEl, item) {
+        let badge = contentEl.querySelector('.column-badge');
+        if (this.isColumnItem(item)) {
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'column-badge';
+                badge.textContent = 'コラム';
+                contentEl.appendChild(badge);
+            }
+        } else if (badge) {
+            badge.remove();
+        }
+    }
+
+    // 本文をブロック列に解釈する。警告は warnings に行番号付きで積む
+    parseNotationBlocks(lines, start, end, depth, warnings) {
+        const blocks = [];
+        let i = start;
+        while (i < end) {
+            const raw = lines[i];
+            const trimmed = raw.trim();
+            const lineNo = i + 1;
+
+            if (trimmed === '') {
+                blocks.push({ type: 'blank' });
+                i++;
+                continue;
+            }
+
+            const image = trimmed.match(/^!\[([^\]]*)\]\(([^)]*)\)(\{color\})?$/);
+            if (image) {
+                blocks.push({ type: 'image', caption: image[1], src: image[2], color: Boolean(image[3]) });
+                i++;
+                continue;
+            }
+
+            if (trimmed.startsWith(':::')) {
+                const header = trimmed.slice(3).trim();
+                if (header === '') {
+                    warnings.push({ line: lineNo, message: '対応する開始のない ::: があります' });
+                    blocks.push({ type: 'paragraph', text: raw, raw: true });
+                    i++;
+                    continue;
+                }
+
+                const headerMatch = header.match(/^(\S+)(?:\s+(.*))?$/);
+                const name = headerMatch ? headerMatch[1] : header;
+                const title = headerMatch && headerMatch[2] ? headerMatch[2].trim() : '';
+                if (name !== 'コラム' && name !== '横組み') {
+                    warnings.push({ line: lineNo, message: `未知のブロック名「${name}」（原文のまま出力されます）` });
+                    blocks.push({ type: 'paragraph', text: raw, raw: true });
+                    i++;
+                    continue;
+                }
+                if (depth >= 2) {
+                    warnings.push({ line: lineNo, message: 'ブロックのネストは2段までです' });
+                    blocks.push({ type: 'paragraph', text: raw, raw: true });
+                    i++;
+                    continue;
+                }
+
+                // 対応する閉じフェンスを探す（見出し付き ::: を開き、単独 ::: を閉じとして数える）
+                let counter = 1;
+                let closeIndex = -1;
+                for (let j = i + 1; j < end; j++) {
+                    const t = lines[j].trim();
+                    if (t === ':::') {
+                        counter--;
+                        if (counter === 0) {
+                            closeIndex = j;
+                            break;
+                        }
+                    } else if (t.startsWith(':::') && t.slice(3).trim() !== '') {
+                        counter++;
+                    }
+                }
+                if (closeIndex === -1) {
+                    warnings.push({ line: lineNo, message: `閉じられていない :::${name}（原文のまま出力されます）` });
+                    blocks.push({ type: 'paragraph', text: raw, raw: true });
+                    i++;
+                    continue;
+                }
+
+                const children = this.parseNotationBlocks(lines, i + 1, closeIndex, depth + 1, warnings);
+                blocks.push(name === 'コラム'
+                    ? { type: 'column', title: title || null, blocks: children }
+                    : { type: 'yoko', blocks: children });
+                i = closeIndex + 1;
+                continue;
+            }
+
+            blocks.push({ type: 'paragraph', text: raw });
+            i++;
+        }
+        return blocks;
+    }
+
+    parseNotation(content) {
+        const warnings = [];
+        const normalized = (content || '').replace(/\r\n?/g, '\n').replace(/\n$/, '');
+        if (normalized === '') {
+            return { blocks: [], warnings };
+        }
+        const lines = normalized.split('\n');
+        return { blocks: this.parseNotationBlocks(lines, 0, lines.length, 0, warnings), warnings };
+    }
+
+    countColumnBlocks(blocks) {
+        return blocks.reduce((sum, b) => {
+            if (b.type === 'column') return sum + 1 + this.countColumnBlocks(b.blocks);
+            if (b.type === 'yoko') return sum + this.countColumnBlocks(b.blocks);
+            return sum;
+        }, 0);
+    }
+
+    // \X エスケープを外して表示用テキストにする（ルビ等のインライン記法は原文のまま表示）
+    unescapeNotation(text) {
+        return text.replace(/\\(.)/g, '$1');
+    }
+
+    renderNotationBlocks(blocks) {
+        return blocks.map(b => {
+            switch (b.type) {
+                case 'blank':
+                    return '<div class="pv-blank"></div>';
+                case 'image': {
+                    const label = b.color ? 'カラー図版' : '図版';
+                    return `<div class="pv-image">［${label}: ${this.escapeHtml(b.src)}］${b.caption ? `<div class="pv-caption">${this.escapeHtml(b.caption)}</div>` : ''}</div>`;
+                }
+                case 'column': {
+                    const label = b.title ? `コラム: ${b.title}` : 'コラム';
+                    return `<div class="pv-column"><p class="pv-column-title">${this.escapeHtml(label)}</p>${this.renderNotationBlocks(b.blocks)}</div>`;
+                }
+                case 'yoko':
+                    return `<div class="pv-yoko"><span class="pv-yoko-label">横組み</span>${this.renderNotationBlocks(b.blocks)}</div>`;
+                default: {
+                    const text = b.raw ? b.text : this.unescapeNotation(b.text);
+                    return `<p class="pv-paragraph${b.raw ? ' pv-raw' : ''}">${this.escapeHtml(text)}</p>`;
+                }
+            }
+        }).join('');
+    }
+
+    updateNotationView() {
+        const content = this.elements.currentContent.value;
+        const { blocks, warnings } = this.parseNotation(content);
+        const columnCount = this.countColumnBlocks(blocks);
+
+        // 項目全体のコラム指定（トグル・本文欄の囲み表示・組版ツールと同じ警告）
+        const item = this.currentItem;
+        const isColumn = this.isColumnItem(item);
+        this.elements.columnToggleBtn.setAttribute('aria-pressed', String(isColumn));
+        this.elements.columnToggleBtn.disabled = !item || (!isColumn && !this.canBeColumn(item));
+        this.elements.editor.classList.toggle('is-column', isColumn);
+        if (isColumn) {
+            if (!this.canBeColumn(item)) {
+                warnings.unshift({ line: 0, message: '書名・章はコラムにできません（組版では無視されます）' });
+            } else if (item.children.length > 0) {
+                warnings.unshift({ line: 0, message: 'コラム項目の子項目はコラムの外に組まれます' });
+            }
+            if (columnCount > 0) {
+                warnings.push({ line: 0, message: 'コラム項目の本文に :::コラム があり、二重に囲まれます' });
+            }
+        }
+
+        const status = this.elements.notationStatus;
+        if (warnings.length > 0) {
+            const where = w => w.line > 0 ? `${w.line}行目: ${w.message}` : w.message;
+            const more = warnings.length > 1 ? ` 他${warnings.length - 1}件` : '';
+            status.textContent = `⚠ ${where(warnings[0])}${more}`;
+            status.title = warnings.map(where).join('\n');
+            status.classList.add('warning');
+        } else {
+            status.textContent = columnCount > 0 ? `コラム ${columnCount}件` : '';
+            status.title = '';
+            status.classList.remove('warning');
+        }
+
+        if (this.previewMode) {
+            if (isColumn) {
+                this.elements.contentPreview.innerHTML =
+                    this.renderNotationBlocks([{ type: 'column', title: this.displayTitle(item) || null, blocks }]);
+            } else {
+                this.elements.contentPreview.innerHTML = blocks.length > 0
+                    ? this.renderNotationBlocks(blocks)
+                    : '<p class="pv-empty">（本文なし）</p>';
+            }
+        }
+    }
+
+    // 編集 ⇔ プレビュー（コラムを罫囲みで表示）の切り替え
+    togglePreview(force) {
+        this.previewMode = typeof force === 'boolean' ? force : !this.previewMode;
+        this.elements.currentContent.classList.toggle('hidden', this.previewMode);
+        this.elements.contentPreview.classList.toggle('hidden', !this.previewMode);
+        this.elements.togglePreviewBtn.textContent = this.previewMode ? '編集に戻る' : 'プレビュー';
+        this.elements.togglePreviewBtn.setAttribute('aria-pressed', String(this.previewMode));
+        this.updateNotationView();
     }
 
     // ツールバー表示/非表示機能

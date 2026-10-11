@@ -23,6 +23,9 @@
     --header-height: 56px;
     --toolbar-height: 64px;
     --touch-target: 44px;
+    --warning-bg: #FFF3E0;
+    --warning-text: #E65100;
+    --column-accent: #6D4C41;
 }
 
 body {
@@ -299,11 +302,16 @@ body {
 
 /* Title Section */
 .title-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 16px;
     border-bottom: 1px solid var(--divider-color);
 }
 
 .title-input-mobile {
+    flex: 1;
+    min-width: 0;
     width: 100%;
     padding: 12px 0;
     border: none;
@@ -339,6 +347,167 @@ body {
 }
 
 #current-content-mobile::placeholder {
+    color: var(--text-secondary);
+}
+
+/* コラム項目（タイトル末尾 {コラム}）のトグル・バッジ・囲み表示 */
+.column-toggle {
+    flex-shrink: 0;
+    min-height: 32px;
+    padding: 4px 12px;
+    border: 1px solid var(--divider-color);
+    border-radius: 16px;
+    background: var(--bg-color);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.column-toggle[aria-pressed="true"] {
+    border-color: var(--column-accent);
+    background: var(--column-accent);
+    color: var(--surface-color);
+}
+
+.column-toggle:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.column-badge {
+    flex-shrink: 0;
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--column-accent);
+    border-radius: 4px;
+    color: var(--column-accent);
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+/* 項目全体がコラムのとき、本文欄を組版と同じく上下罫で囲む */
+.mobile-editor.is-column .content-section {
+    margin: 8px 16px;
+    padding: 12px 0;
+    border-top: 2px solid var(--column-accent);
+    border-bottom: 2px solid var(--column-accent);
+}
+
+/* 項目全体のプレビューはエディタ側の罫線で囲まれているため、二重の罫線を避ける */
+.mobile-editor.is-column .content-preview > .pv-column:only-child {
+    border: none;
+    margin: 0;
+    padding: 0;
+}
+
+/* 組版ツール記法バー（:::コラム 挿入・プレビュー） */
+.notation-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.notation-btn {
+    min-height: 32px;
+    padding: 4px 12px;
+    border: 1px solid var(--divider-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-color);
+    color: var(--text-color);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.notation-btn[aria-pressed="true"] {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.notation-status {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.notation-status.warning {
+    color: var(--warning-text);
+}
+
+/* プレビュー: コラムは組版と同じく上下罫囲み・やや小さい文字で表示 */
+.content-preview {
+    flex: 1;
+    min-height: 200px;
+    overflow-y: auto;
+    font-size: 16px;
+    line-height: 1.8;
+}
+
+.content-preview p {
+    margin: 0;
+}
+
+.pv-paragraph {
+    text-indent: 1em;
+}
+
+.pv-raw {
+    text-indent: 0;
+    background: var(--warning-bg);
+    color: var(--warning-text);
+}
+
+.pv-blank {
+    height: 1.8em;
+}
+
+.pv-column {
+    border-top: 1px solid var(--text-color);
+    border-bottom: 1px solid var(--text-color);
+    margin: 1em 0;
+    padding: 0.5em 0;
+    font-size: 0.88em;
+}
+
+.pv-column-title {
+    font-weight: 700;
+    margin-bottom: 0.4em !important;
+}
+
+.pv-yoko {
+    border-left: 3px solid var(--divider-color);
+    padding-left: 8px;
+    margin: 0.5em 0;
+}
+
+.pv-yoko-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.pv-yoko .pv-paragraph {
+    text-indent: 0;
+}
+
+.pv-image {
+    margin: 0.5em 0;
+    padding: 8px;
+    border: 1px dashed var(--divider-color);
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-align: center;
+}
+
+.pv-caption {
+    color: var(--text-color);
+}
+
+.pv-empty {
     color: var(--text-secondary);
 }
 
@@ -1128,6 +1297,9 @@ body {
         --bg-color: #121212;
         --surface-color: #1E1E1E;
         --divider-color: #333333;
+        --warning-bg: #3E2A12;
+        --warning-text: #FFB74D;
+        --column-accent: #BCAAA4;
     }
 }
 

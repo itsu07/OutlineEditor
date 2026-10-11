@@ -3,7 +3,7 @@
  * バージョン付きキャッシュによるアプリシェルのネットワークファースト配信
  */
 
-const CACHE_NAME = 'outlinewriter-v4';
+const CACHE_NAME = 'outlinewriter-v5';
 
 const APP_SHELL = [
     './',

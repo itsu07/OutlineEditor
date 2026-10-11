@@ -56,10 +56,19 @@
             
             <div class="title-section">
                 <input type="text" id="current-title-mobile" placeholder="タイトルを入力..." class="title-input-mobile">
+                <!-- 項目全体をコラムにする（タイトル末尾に {コラム} を付与。組版ツールの記法） -->
+                <button id="column-toggle-mobile" class="column-toggle" aria-pressed="false" title="この項目をコラムにする／解除する">コラム</button>
             </div>
             
             <div class="content-section">
+                <!-- 組版ツール記法（:::コラム）の挿入・確認 -->
+                <div class="notation-bar">
+                    <button id="insert-column-mobile" class="notation-btn" title="本文の選択範囲を :::コラム で囲む／本文中にコラムを挿入">＋本文内コラム</button>
+                    <button id="toggle-preview-mobile" class="notation-btn" aria-pressed="false">プレビュー</button>
+                    <span id="notation-status-mobile" class="notation-status"></span>
+                </div>
                 <textarea id="current-content-mobile" placeholder="内容を入力してください..."></textarea>
+                <div id="content-preview-mobile" class="content-preview hidden"></div>
             </div>
             
             <div class="char-count-mobile">
